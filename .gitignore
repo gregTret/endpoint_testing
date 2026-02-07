@@ -4,6 +4,7 @@ venvActivate.sh
 .env
 *.pem
 *.key
+.vault_key
 
 # ── Python ──
 __pycache__/

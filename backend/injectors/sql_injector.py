@@ -110,16 +110,39 @@ class SQLInjector(BaseInjector):
                 is_vulnerable = True
                 confidence = "high"
 
-        # 3. Boolean-blind
+        # Helper: response is just null/empty (server didn't find anything)
+        body_stripped = body.strip().strip('"')
+        is_empty_response = (
+            not body_stripped
+            or body_stripped == "null"
+            or body_stripped == "{}"
+            or body_stripped == "[]"
+        )
+
+        # 3. Boolean-blind — only flag the FALSE case if the TRUE case
+        #    matched baseline.  A "false" payload returning null/empty
+        #    when baseline returns data is normal (bad input → no result).
         if "AND 1=2" in payload or "'a'='b" in payload:
-            if len(body) != len(baseline_body) or test_status != baseline_status:
-                evidence.append("Boolean false differs from baseline")
+            # The false payload should return LESS data than baseline
+            # but this alone is not conclusive — we note it for pairing
+            if not is_empty_response and body != baseline_body:
+                evidence.append("Boolean false returned non-empty different response")
+                is_vulnerable = True
+                confidence = "medium"
+            elif is_empty_response and not baseline_body.strip().strip('"') in ("null", "", "{}", "[]"):
+                # Empty response when baseline had data — expected for bad input, NOT a vuln
+                evidence.append("Boolean false returned empty (likely normal — not conclusive)")
+
+        if "AND 1=1" in payload or "'a'='a" in payload:
+            # The true tautology should behave identically to baseline
+            if body == baseline_body and test_status == baseline_status:
+                evidence.append("Boolean true matches baseline — SQL may be evaluated")
                 is_vulnerable = True
                 confidence = "medium"
 
-        # 4. UNION — extra content returned
+        # 4. UNION — extra content returned (not just null/empty)
         if "UNION" in payload.upper():
-            if test_status == 200 and len(body) > len(baseline_body) + 50:
+            if test_status == 200 and not is_empty_response and len(body) > len(baseline_body) + 50:
                 evidence.append("UNION query returned additional content")
                 is_vulnerable = True
                 confidence = "medium"

@@ -1,3 +1,4 @@
+import json
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -56,9 +57,18 @@ class BaseInjector(ABC):
         headers: dict | None = None,
         body: str = "",
         injection_points: list[str] | None = None,
+        target_keys: list[str] | None = None,
         timeout: float = SCAN_DEFAULT_TIMEOUT,
+        on_result=None,
     ) -> list[ScanResult]:
-        """Run every payload × every injectable field and return results."""
+        """Run every payload × every injectable field and return results.
+
+        *target_keys*: if provided, only inject into these specific
+        param names / header names / JSON body key paths.  Empty = all.
+
+        *on_result*: optional async callback(result, index, total) called
+        after each individual test completes, for real-time progress.
+        """
         params = params or {}
         headers = headers or {}
         injection_points = injection_points or ["params"]
@@ -70,9 +80,11 @@ class BaseInjector(ABC):
         )
 
         # Build the list of (injection_point, param_name) targets so
-        # we test *every* param/header — not just the first one.
-        targets = _build_targets(injection_points, params, headers)
+        # we test *every* param, header, and JSON body field individually.
+        targets = _build_targets(injection_points, params, headers, body, target_keys)
+        total = len(payloads) * len(targets)
 
+        idx = 0
         async with httpx.AsyncClient(verify=False, timeout=timeout) as client:
             for payload in payloads:
                 for point, key in targets:
@@ -81,6 +93,9 @@ class BaseInjector(ABC):
                         payload, point, key, baseline,
                     )
                     results.append(result)
+                    idx += 1
+                    if on_result:
+                        await on_result(result, idx, total)
 
         self.results.extend(results)
         return results
@@ -102,20 +117,33 @@ class BaseInjector(ABC):
     ) -> ScanResult:
         """Send one request with *payload* injected at *target_key*."""
         mod_params = dict(params)
-        mod_headers = dict(headers)
+        # Strip hop-by-hop / size headers so httpx recalculates them
+        mod_headers = {
+            k: v for k, v in headers.items()
+            if k.lower() not in ("content-length", "transfer-encoding")
+        }
         mod_body = body
+        send_json = False
 
         if injection_point == "params" and target_key in mod_params:
             mod_params[target_key] = payload
         elif injection_point == "headers" and target_key in mod_headers:
             mod_headers[target_key] = payload
         elif injection_point == "body":
-            mod_body = payload
+            # JSON-aware: replace a single key inside a JSON body
+            mod_body, send_json = _inject_into_body(body, target_key, payload)
 
         start = time.time()
         try:
             if method.upper() == "GET":
                 resp = await client.get(url, params=mod_params, headers=mod_headers)
+            elif send_json:
+                resp = await client.request(
+                    method, url,
+                    params=mod_params,
+                    headers=mod_headers,
+                    json=json.loads(mod_body),
+                )
             else:
                 resp = await client.request(
                     method, url,
@@ -172,14 +200,18 @@ class BaseInjector(ABC):
         headers: dict, body: str, timeout: float,
     ) -> dict:
         """Fire a baseline (unmodified) request."""
+        clean_headers = {
+            k: v for k, v in headers.items()
+            if k.lower() not in ("content-length", "transfer-encoding")
+        }
         start = time.time()
         try:
             async with httpx.AsyncClient(verify=False, timeout=timeout) as client:
                 if method.upper() == "GET":
-                    resp = await client.get(url, params=params, headers=headers)
+                    resp = await client.get(url, params=params, headers=clean_headers)
                 else:
                     resp = await client.request(
-                        method, url, params=params, headers=headers, content=body,
+                        method, url, params=params, headers=clean_headers, content=body,
                     )
                 elapsed = round((time.time() - start) * 1000, 2)
                 return {
@@ -195,23 +227,102 @@ class BaseInjector(ABC):
 
 def _build_targets(
     injection_points: list[str], params: dict, headers: dict,
+    body: str = "", target_keys: list[str] | None = None,
 ) -> list[tuple[str, str]]:
     """
-    Expand injection points into (point, key) pairs so every
-    param and every injectable header gets tested individually.
+    Expand injection points into (point, key) pairs.
+
+    If *target_keys* is provided and non-empty, only include keys
+    that appear in that list.  Otherwise test everything.
     """
+    allowed = set(target_keys) if target_keys else None
     targets: list[tuple[str, str]] = []
+
     for point in injection_points:
         if point == "params":
             if params:
-                targets.extend(("params", k) for k in params)
+                for k in params:
+                    if allowed is None or k in allowed:
+                        targets.append(("params", k))
             else:
-                # No params — still send payloads as a single query param
                 targets.append(("params", "q"))
         elif point == "headers":
             for k in headers:
                 if k.lower() not in _SKIP_HEADERS:
-                    targets.append(("headers", k))
+                    if allowed is None or k in allowed:
+                        targets.append(("headers", k))
         elif point == "body":
-            targets.append(("body", "body"))
+            body_keys = _extract_body_keys(body)
+            if body_keys:
+                for k in body_keys:
+                    if allowed is None or k in allowed:
+                        targets.append(("body", k))
+            else:
+                targets.append(("body", "__raw__"))
+
     return targets or [("params", "q")]
+
+
+def _extract_body_keys(body: str) -> list[str]:
+    """
+    If *body* is valid JSON, return all top-level keys (flat)
+    and dot-notation paths for nested objects.
+    Returns empty list for non-JSON bodies.
+    """
+    if not body or not body.strip():
+        return []
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(data, dict):
+        return []
+
+    keys: list[str] = []
+    _walk_keys(data, "", keys)
+    return keys
+
+
+def _walk_keys(obj: dict, prefix: str, out: list[str]) -> None:
+    """Recursively collect dot-notation paths for all leaf values."""
+    for k, v in obj.items():
+        path = f"{prefix}{k}" if not prefix else f"{prefix}.{k}"
+        if isinstance(v, dict):
+            _walk_keys(v, path, out)
+        else:
+            out.append(path)
+
+
+def _inject_into_body(body: str, target_key: str, payload: str) -> tuple[str, bool]:
+    """
+    Replace a single key in a JSON body with *payload*.
+    Returns (modified_body, is_json).
+    For __raw__ or non-JSON, replaces the entire body.
+    """
+    if target_key == "__raw__":
+        return payload, False
+
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, TypeError):
+        return payload, False
+
+    if not isinstance(data, dict):
+        return payload, False
+
+    # Handle dot-notation for nested keys: "user.name" → data["user"]["name"]
+    _set_nested(data, target_key, payload)
+    return json.dumps(data), True
+
+
+def _set_nested(obj: dict, dotpath: str, value) -> None:
+    """Set a value in a nested dict using dot-notation path."""
+    parts = dotpath.split(".")
+    current = obj
+    for part in parts[:-1]:
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            return  # path doesn't exist — skip silently
+    if isinstance(current, dict):
+        current[parts[-1]] = value

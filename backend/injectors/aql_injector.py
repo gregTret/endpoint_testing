@@ -115,10 +115,10 @@ class AQLInjector(BaseInjector):
                 is_vulnerable = True
                 confidence = "medium"
 
-        # 6. Type confusion
+        # 6. Type confusion — only flag if server errors (not just 400 validation)
         if payload in ("[]", "{}", "null", "true"):
-            if test_status != baseline_status:
-                evidence.append("Type confusion: status code changed with non-string input")
+            if test_status == 500 and baseline_status != 500:
+                evidence.append("Type confusion: server error with non-string input")
                 is_vulnerable = True
                 confidence = "low"
 

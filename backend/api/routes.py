@@ -13,9 +13,15 @@ from storage.db import (
     save_scan_result,
     get_scan_results,
     export_session,
+    save_credential,
+    get_credentials,
+    update_credential,
+    delete_credential,
 )
 from injectors.sql_injector import SQLInjector
 from injectors.aql_injector import AQLInjector
+from injectors.xss_injector import XSSInjector
+from injectors.mongo_injector import MongoInjector
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -24,13 +30,15 @@ router = APIRouter()
 INJECTORS = {
     "sql": SQLInjector,
     "aql": AQLInjector,
+    "xss": XSSInjector,
+    "mongo": MongoInjector,
 }
 
 # Spider reference — set by main.py at startup
 _spider = None
 
 # Scan status tracking
-_scan_status: dict = {"running": False, "error": None, "completed": 0, "total": 0}
+_scan_status: dict = {"running": False, "error": None, "completed": 0, "total": 0, "scan_id": ""}
 
 
 def set_spider(spider) -> None:
@@ -133,6 +141,7 @@ async def list_injectors():
 @router.post("/scan")
 async def start_scan(config: ScanConfig, background_tasks: BackgroundTasks):
     global _scan_status
+    import uuid
 
     injector_cls = INJECTORS.get(config.injector_type)
     if not injector_cls:
@@ -145,21 +154,28 @@ async def start_scan(config: ScanConfig, background_tasks: BackgroundTasks):
         )
 
     injector = injector_cls()
-    payloads = injector.generate_payloads(
-        {"url": config.target_url, "method": config.method, "params": config.params},
-    )
     points = config.injection_points or ["params"]
+    scan_id = uuid.uuid4().hex[:12]
     _scan_status = {
         "running": True,
         "error": None,
         "completed": 0,
-        "total": len(payloads) * max(len(points), 1),
+        "total": 0,
+        "scan_id": scan_id,
     }
+
+    async def on_result(result, idx, total):
+        """Called after each individual test — saves result and updates progress."""
+        _scan_status["total"] = total
+        _scan_status["completed"] = idx
+        d = result.model_dump()
+        d["session_id"] = scan_id
+        await save_scan_result(d)
 
     async def run_scan():
         global _scan_status
         try:
-            log.info("scan started: %s against %s", config.injector_type, config.target_url)
+            log.info("scan %s started: %s against %s", scan_id, config.injector_type, config.target_url)
             results = await injector.test_endpoint(
                 url=config.target_url,
                 method=config.method,
@@ -167,15 +183,14 @@ async def start_scan(config: ScanConfig, background_tasks: BackgroundTasks):
                 headers=config.headers,
                 body=config.body,
                 injection_points=points,
+                target_keys=config.target_keys or None,
                 timeout=config.timeout,
+                on_result=on_result,
             )
-            log.info("scan completed: %d results", len(results))
-            for r in results:
-                await save_scan_result(r.model_dump())
-                _scan_status["completed"] += 1
+            log.info("scan %s completed: %d results", scan_id, len(results))
             _scan_status["running"] = False
         except Exception as e:
-            log.error("scan failed: %s", e, exc_info=True)
+            log.error("scan %s failed: %s", scan_id, e, exc_info=True)
             _scan_status["running"] = False
             _scan_status["error"] = str(e)
 
@@ -184,7 +199,7 @@ async def start_scan(config: ScanConfig, background_tasks: BackgroundTasks):
         "status": "scan_started",
         "injector": config.injector_type,
         "target": config.target_url,
-        "total_tests": _scan_status["total"],
+        "scan_id": scan_id,
     }
 
 
@@ -234,3 +249,29 @@ async def replay_request(log_id: int):
             }
     except Exception as e:
         return JSONResponse(status_code=502, content={"error": str(e)})
+
+
+# ──────────────────────────── Credentials ────────────────────────────
+
+
+@router.get("/credentials")
+async def list_credentials(site: str = None):
+    return await get_credentials(site_filter=site)
+
+
+@router.post("/credentials")
+async def create_credential(cred: dict):
+    cred_id = await save_credential(cred)
+    return {"id": cred_id, "status": "saved"}
+
+
+@router.put("/credentials/{cred_id}")
+async def edit_credential(cred_id: int, cred: dict):
+    await update_credential(cred_id, cred)
+    return {"status": "updated"}
+
+
+@router.delete("/credentials/{cred_id}")
+async def remove_credential(cred_id: int):
+    await delete_credential(cred_id)
+    return {"status": "deleted"}

@@ -38,12 +38,12 @@ window.SiteMap = (() => {
     function renderTree() {
         treeEl.innerHTML = '';
         for (const [host, data] of Object.entries(treeData)) {
-            const hostNode = createTreeNode(host, data._children, 0, true);
+            const hostNode = createTreeNode(host, data._children, 0, true, 'https://' + host);
             treeEl.appendChild(hostNode);
         }
     }
 
-    function createTreeNode(label, children, depth, isHost) {
+    function createTreeNode(label, children, depth, isHost, fullUrl) {
         const wrap = document.createElement('div');
         const childKeys = Object.keys(children);
         const hasChildren = childKeys.length > 0;
@@ -69,16 +69,41 @@ window.SiteMap = (() => {
         row.appendChild(lbl);
         wrap.appendChild(row);
 
+        // Left click → navigate browser + toggle children
+        row.addEventListener('click', (e) => {
+            e.stopPropagation();
+            window.electronAPI.navigate(fullUrl);
+            document.getElementById('url-input').value = fullUrl;
+        });
+
+        // Right click → context menu
+        row.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            let hostName, pathParts;
+            try {
+                const u = new URL(fullUrl);
+                hostName = u.host;
+                pathParts = u.pathname.split('/').filter(Boolean);
+            } catch (_) {
+                hostName = isHost ? label : null;
+                pathParts = [];
+            }
+            showContextMenu(e.clientX, e.clientY, fullUrl, hostName, isHost ? [] : pathParts);
+        });
+
         const childContainer = document.createElement('div');
         childContainer.style.display = 'none';
 
         for (const key of childKeys) {
-            childContainer.appendChild(createTreeNode(key, children[key]._children, depth + 1, false));
+            const childUrl = fullUrl.replace(/\/+$/, '') + '/' + key;
+            childContainer.appendChild(createTreeNode(key, children[key]._children, depth + 1, false, childUrl));
         }
         wrap.appendChild(childContainer);
 
         if (hasChildren) {
-            row.addEventListener('click', () => {
+            toggle.addEventListener('click', (e) => {
+                e.stopPropagation();
                 const open = childContainer.style.display !== 'none';
                 childContainer.style.display = open ? 'none' : 'block';
                 toggle.textContent = open ? '▸' : '▾';
@@ -148,6 +173,71 @@ window.SiteMap = (() => {
                 addUrl(url);
             }
         } catch (_) {}
+    }
+
+    // ── Context Menu ──────────────────────
+
+    let ctxMenu = null;
+
+    function showContextMenu(x, y, url, host, pathParts) {
+        hideContextMenu();
+
+        ctxMenu = document.createElement('div');
+        ctxMenu.className = 'ctx-menu';
+        ctxMenu.style.left = x + 'px';
+        ctxMenu.style.top = y + 'px';
+
+        const items = [
+            { label: 'Open in Browser', action: () => { window.electronAPI.navigate(url); document.getElementById('url-input').value = url; } },
+            { label: 'Copy URL', action: () => navigator.clipboard.writeText(url) },
+            { label: 'Scan with Injector', action: () => { InjectorUI.loadFromLog({ url, method: 'GET', request_headers: {}, request_body: '' }); switchTab('injector'); } },
+            { label: 'Add Credentials for Site', action: () => { Credentials.openWithSite(host || new URL(url).host); switchTab('creds'); } },
+            { label: 'Start Crawl from Here', action: () => { crawlBtn.disabled = true; stopBtn.disabled = false; statusEl.textContent = 'Starting...'; fetch(`${API}/crawl?url=${encodeURIComponent(url)}&max_depth=5&max_pages=100`, { method: 'POST' }).then(pollCrawlStatus); } },
+            { label: 'Remove from Site Map', cls: 'ctx-menu-item--danger', action: () => { removeNode(host || new URL(url).host, pathParts); } },
+        ];
+
+        items.forEach(({ label, action, cls }) => {
+            const item = document.createElement('div');
+            item.className = cls ? `ctx-menu-item ${cls}` : 'ctx-menu-item';
+            item.textContent = label;
+            item.addEventListener('click', (e) => { e.stopPropagation(); action(); hideContextMenu(); });
+            ctxMenu.appendChild(item);
+        });
+
+        document.body.appendChild(ctxMenu);
+
+        // Close on any click elsewhere
+        setTimeout(() => document.addEventListener('click', hideContextMenu, { once: true }), 0);
+    }
+
+    function removeNode(host, pathParts) {
+        if (!pathParts || pathParts.length === 0) {
+            // Removing an entire host
+            delete treeData[host];
+        } else {
+            // Walk to the parent and delete the child key
+            let node = treeData[host];
+            if (!node) return;
+            let parent = node._children;
+            for (let i = 0; i < pathParts.length - 1; i++) {
+                if (!parent[pathParts[i]]) return;
+                parent = parent[pathParts[i]]._children;
+            }
+            delete parent[pathParts[pathParts.length - 1]];
+        }
+        renderTree();
+    }
+
+    function hideContextMenu() {
+        if (ctxMenu && ctxMenu.parentNode) {
+            ctxMenu.parentNode.removeChild(ctxMenu);
+        }
+        ctxMenu = null;
+    }
+
+    function switchTab(tabName) {
+        document.querySelectorAll('#tab-bar .tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabName));
+        document.querySelectorAll('.tab-pane').forEach(p => p.classList.toggle('active', p.dataset.tab === tabName));
     }
 
     return { init, addUrl };

@@ -57,6 +57,22 @@ async def init_db():
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_scans_session ON scan_results(session_id)"
         )
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS credentials (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                site TEXT NOT NULL,
+                username TEXT DEFAULT '',
+                password TEXT DEFAULT '',
+                token TEXT DEFAULT '',
+                auth_type TEXT DEFAULT 'basic',
+                notes TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_creds_site ON credentials(site)"
+        )
         await db.commit()
 
 
@@ -200,6 +216,82 @@ async def export_session(session_id: str = "default") -> dict:
     logs = await get_request_logs(session_id, limit=10000)
     scans = await get_scan_results(session_id, limit=10000)
     return {"session_id": session_id, "request_logs": logs, "scan_results": scans}
+
+
+# ── Credentials (encrypted at rest) ───────────────────────────────
+
+from storage.crypto import encrypt, decrypt
+
+# Fields that get encrypted before storage
+_SENSITIVE_FIELDS = ("password", "token")
+
+
+async def save_credential(cred: dict) -> int:
+    """Save a credential entry. Sensitive fields are encrypted."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            INSERT INTO credentials (site, username, password, token, auth_type, notes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            cred.get("site", ""),
+            cred.get("username", ""),
+            encrypt(cred.get("password", "")),
+            encrypt(cred.get("token", "")),
+            cred.get("auth_type", "basic"),
+            cred.get("notes", ""),
+            now, now,
+        ))
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_credentials(site_filter: str = None) -> list[dict]:
+    """Fetch all credentials, decrypting sensitive fields."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        if site_filter:
+            cursor = await db.execute(
+                "SELECT * FROM credentials WHERE site LIKE ? ORDER BY updated_at DESC",
+                (f"%{site_filter}%",),
+            )
+        else:
+            cursor = await db.execute("SELECT * FROM credentials ORDER BY updated_at DESC")
+        rows = [dict(row) for row in await cursor.fetchall()]
+        for row in rows:
+            row["password"] = decrypt(row.get("password", ""))
+            row["token"] = decrypt(row.get("token", ""))
+        return rows
+
+
+async def update_credential(cred_id: int, cred: dict) -> bool:
+    """Update an existing credential. Sensitive fields are re-encrypted."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            UPDATE credentials SET site=?, username=?, password=?, token=?, auth_type=?, notes=?, updated_at=?
+            WHERE id=?
+        """, (
+            cred.get("site", ""),
+            cred.get("username", ""),
+            encrypt(cred.get("password", "")),
+            encrypt(cred.get("token", "")),
+            cred.get("auth_type", "basic"),
+            cred.get("notes", ""),
+            now, cred_id,
+        ))
+        await db.commit()
+        return True
+
+
+async def delete_credential(cred_id: int) -> bool:
+    """Delete a credential by ID."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM credentials WHERE id=?", (cred_id,))
+        await db.commit()
+        return True
 
 
 # ── Helpers ────────────────────────────────────────────────────────

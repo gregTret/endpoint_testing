@@ -36,6 +36,7 @@
         <button class="tab active" data-tab="logs">Logs</button>
         <button class="tab" data-tab="sitemap">Site Map</button>
         <button class="tab" data-tab="injector">Injector</button>
+        <button class="tab" data-tab="creds">Creds</button>
     </div>
 
     <!-- Tab content -->
@@ -88,6 +89,8 @@
                         <select id="inject-type">
                             <option value="sql">SQL</option>
                             <option value="aql">AQL</option>
+                            <option value="xss">XSS</option>
+                            <option value="mongo">MongoDB</option>
                         </select>
                     </div>
                 </div>
@@ -105,15 +108,69 @@
                 </div>
                 <div class="form-group">
                     <label>Injection Points</label>
-                    <div class="checkbox-group">
+                    <div id="injection-points" class="checkbox-group">
                         <label><input type="checkbox" value="params" checked> Params</label>
                         <label><input type="checkbox" value="headers"> Headers</label>
                         <label><input type="checkbox" value="body"> Body</label>
                     </div>
                 </div>
+                <div class="form-group" id="key-picker-group" style="display:none">
+                    <label>Target Keys <span class="hint">(uncheck keys you don't want to inject into)</span></label>
+                    <div id="key-picker" class="checkbox-group"></div>
+                </div>
                 <button id="btn-start-scan" class="btn-primary">Launch Scan</button>
             </div>
             <div id="scan-results" class="scrollable"></div>
+        </div>
+
+        <!-- Credentials -->
+        <div class="tab-pane" data-tab="creds">
+            <div class="pane-controls">
+                <button id="btn-add-cred">+ Add</button>
+                <input type="text" id="cred-search" placeholder="Filter by site...">
+            </div>
+            <div id="cred-form" class="cred-form hidden">
+                <input type="hidden" id="cred-edit-id" value="">
+                <div class="form-row">
+                    <div class="form-group half">
+                        <label>Site / Domain</label>
+                        <input type="text" id="cred-site" placeholder="example.com">
+                    </div>
+                    <div class="form-group half">
+                        <label>Auth Type</label>
+                        <select id="cred-auth-type">
+                            <option value="basic">Basic (user/pass)</option>
+                            <option value="bearer">Bearer Token</option>
+                            <option value="api_key">API Key</option>
+                            <option value="cookie">Cookie</option>
+                            <option value="other">Other</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group half">
+                        <label>Username</label>
+                        <input type="text" id="cred-username" placeholder="admin">
+                    </div>
+                    <div class="form-group half">
+                        <label>Password</label>
+                        <input type="password" id="cred-password" placeholder="********">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Token / API Key</label>
+                    <input type="text" id="cred-token" placeholder="Bearer eyJ...">
+                </div>
+                <div class="form-group">
+                    <label>Notes</label>
+                    <input type="text" id="cred-notes" placeholder="Optional notes">
+                </div>
+                <div class="form-row">
+                    <button id="btn-save-cred" class="btn-primary" style="flex:1">Save</button>
+                    <button id="btn-cancel-cred" class="btn-small" style="flex:0">Cancel</button>
+                </div>
+            </div>
+            <div id="cred-list" class="scrollable"></div>
         </div>
     </div>
 
@@ -132,6 +189,7 @@
 <script src="js/log-viewer.js"></script>
 <script src="js/site-map.js"></script>
 <script src="js/injector-ui.js"></script>
+<script src="js/credentials.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

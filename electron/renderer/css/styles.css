@@ -432,6 +432,34 @@ html, body {
 /* ── Scan Results ─────────────────────────────────────────────────── */
 #scan-results { flex: 1; padding: 4px 0; }
 
+.scan-summary {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 10px;
+    font-size: 11px;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+}
+
+.scan-filters { display: flex; gap: 4px; }
+
+.scan-filter-btn {
+    background: var(--surface2);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 2px 8px;
+    font-size: 10px;
+    cursor: pointer;
+}
+.scan-filter-btn:hover { background: var(--accent-dim); color: #fff; }
+.scan-filter-btn.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+}
+
 .scan-entry {
     padding: 6px 10px;
     border-bottom: 1px solid var(--border);
@@ -447,7 +475,9 @@ html, body {
 
 .scan-header {
     display: flex;
-    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
     margin-bottom: 2px;
 }
 
@@ -459,7 +489,17 @@ html, body {
     max-width: 300px;
 }
 
+.scan-badge {
+    background: var(--surface2);
+    color: var(--text-dim);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    white-space: nowrap;
+}
+
 .scan-confidence {
+    margin-left: auto;
     font-weight: 700;
     font-size: 10px;
     text-transform: uppercase;
@@ -473,6 +513,187 @@ html, body {
     font-size: 10px;
     margin-top: 2px;
 }
+
+.scan-response-toggle {
+    color: var(--accent);
+    font-size: 10px;
+    cursor: pointer;
+    margin-top: 4px;
+    user-select: none;
+}
+.scan-response-toggle:hover { text-decoration: underline; }
+
+.scan-response {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 6px 8px;
+    margin-top: 4px;
+    font-size: 10px;
+    color: var(--text-dim);
+}
+
+.scan-detail-row {
+    padding: 2px 0;
+    word-break: break-all;
+}
+.scan-detail-row strong {
+    color: var(--text);
+}
+
+.scan-response-body {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 6px 8px;
+    margin-top: 4px;
+    max-height: 250px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+    font-size: 10px;
+}
+
+/* ── Key Picker ───────────────────────────────────────────────────── */
+.key-picker {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 6px 0;
+}
+
+.key-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border-radius: 3px;
+    font-family: var(--mono);
+    font-size: 11px;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--text);
+    transition: all .15s;
+    user-select: none;
+}
+.key-chip.selected {
+    border-color: var(--accent);
+    background: var(--accent-dim);
+    color: #fff;
+}
+.key-chip:hover { border-color: var(--text-dim); }
+
+.key-chip input[type="checkbox"] { display: none; }
+
+.hint {
+    font-weight: 400;
+    font-size: 10px;
+    color: var(--text-dim);
+}
+
+/* ── Credentials ──────────────────────────────────────────────────── */
+.cred-form {
+    padding: 10px;
+    border-bottom: 1px solid var(--border);
+}
+
+.cred-form .form-row { margin-bottom: 8px; }
+
+#cred-list { flex: 1; padding: 0; }
+
+.cred-entry {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    transition: background .1s;
+}
+.cred-entry:hover { background: var(--surface2); }
+
+.cred-entry-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 3px;
+}
+
+.cred-site {
+    font-weight: 600;
+    color: var(--accent);
+    font-family: var(--mono);
+}
+
+.cred-auth-type {
+    font-size: 10px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    background: var(--surface);
+    padding: 1px 6px;
+    border-radius: 3px;
+}
+
+.cred-detail {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+}
+
+.cred-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 4px;
+}
+
+.cred-actions button {
+    padding: 2px 8px;
+    font-size: 10px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text-dim);
+    cursor: pointer;
+}
+.cred-actions button:hover { color: var(--text); background: var(--border); }
+.cred-actions button.danger:hover { color: var(--danger); }
+
+.form-group input[type="password"] {
+    width: 100%;
+    padding: 6px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    outline: none;
+}
+.form-group input[type="password"]:focus { border-color: var(--accent); }
+
+/* ── Context Menu ─────────────────────────────────────────────────── */
+.ctx-menu {
+    position: fixed;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 4px 0;
+    min-width: 200px;
+    z-index: 9999;
+    box-shadow: 0 4px 16px rgba(0,0,0,.4);
+}
+
+.ctx-menu-item {
+    padding: 6px 14px;
+    font-size: 12px;
+    color: var(--text);
+    cursor: pointer;
+    white-space: nowrap;
+}
+.ctx-menu-item:hover {
+    background: var(--accent-dim);
+    color: #fff;
+}
+.ctx-menu-item--danger { color: var(--danger); }
+.ctx-menu-item--danger:hover { background: var(--danger); color: #fff; }
 
 /* ── Utility ──────────────────────────────────────────────────────── */
 .hidden { display: none !important; }

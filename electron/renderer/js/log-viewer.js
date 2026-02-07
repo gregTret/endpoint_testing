@@ -59,8 +59,15 @@ window.LogViewer = (() => {
         // Attach click handlers
         listEl.querySelectorAll('.log-entry').forEach(el => {
             el.addEventListener('click', () => selectEntry(Number(el.dataset.id)));
+            el.addEventListener('dblclick', () => {
+                userClosedDetail = false;
+                detailPanel.classList.remove('collapsed');
+                selectEntry(Number(el.dataset.id));
+            });
         });
     }
+
+    let userClosedDetail = false;
 
     async function selectEntry(id) {
         selectedId = id;
@@ -69,7 +76,9 @@ window.LogViewer = (() => {
         const entry = logs.find(e => e.id === id);
         if (!entry) return;
 
-        detailPanel.classList.remove('collapsed');
+        if (!userClosedDetail) {
+            detailPanel.classList.remove('collapsed');
+        }
         detailTitle.textContent = `${entry.method} ${entry.url}`;
 
         detailContent.innerHTML = `
@@ -93,6 +102,7 @@ window.LogViewer = (() => {
 
     function closeDetail() {
         detailPanel.classList.add('collapsed');
+        userClosedDetail = true;
         selectedId = null;
         renderList();
     }

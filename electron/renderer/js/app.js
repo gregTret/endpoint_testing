@@ -19,6 +19,7 @@
         // Initialise sub-modules
         LogViewer.init();
         SiteMap.init();
+        Credentials.init();
         InjectorUI.init();
 
         // Tab switching

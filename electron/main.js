@@ -15,7 +15,31 @@ let pythonProcess;
 
 // ── Backend lifecycle ──────────────────────────────────────────────
 
+function freePort(port) {
+    // Kill anything already bound to this port before we start
+    try {
+        const out = execSync(
+            `netstat -ano | findstr ":${port}" | findstr "LISTENING"`,
+            { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] },
+        );
+        const pids = new Set();
+        for (const line of out.trim().split('\n')) {
+            const pid = line.trim().split(/\s+/).pop();
+            if (pid && pid !== '0') pids.add(pid);
+        }
+        for (const pid of pids) {
+            console.log(`[Startup] killing stale process on port ${port} (PID ${pid})`);
+            try { execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore' }); } catch (_) {}
+        }
+    } catch (_) {
+        // No process on port — good
+    }
+}
+
 function startBackend() {
+    freePort(BACKEND_PORT);
+    freePort(PROXY_PORT);
+
     const backendDir = path.join(__dirname, '..', 'backend');
     pythonProcess = spawn(
         'python',
@@ -139,3 +163,9 @@ app.on('window-all-closed', () => {
 app.on('will-quit', () => {
     killBackend();
 });
+
+// Catch every exit path on Windows
+app.on('before-quit', () => killBackend());
+process.on('exit', () => killBackend());
+process.on('SIGINT', () => { killBackend(); process.exit(); });
+process.on('SIGTERM', () => { killBackend(); process.exit(); });

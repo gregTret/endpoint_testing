@@ -11,6 +11,7 @@ class ScanConfig(BaseModel):
     body: str = ""
     injector_type: str = "sql"
     injection_points: list[str] = []  # "params", "headers", "body"
+    target_keys: list[str] = []       # specific keys to inject into (empty = all)
     follow_redirects: bool = False
     timeout: float = 10.0
 
