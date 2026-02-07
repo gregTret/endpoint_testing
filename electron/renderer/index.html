@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self';
+                   connect-src ws://127.0.0.1:8000 http://127.0.0.1:8000 'self';
+                   style-src 'self' 'unsafe-inline';">
+    <title>Endpoint Security Tool</title>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<!-- ── Top Navigation Bar ─────────────────────────────────────── -->
+<nav id="nav-bar">
+    <div class="nav-controls">
+        <button id="btn-back" title="Back">&#9664;</button>
+        <button id="btn-forward" title="Forward">&#9654;</button>
+        <button id="btn-refresh" title="Refresh">&#8635;</button>
+    </div>
+    <div class="url-bar">
+        <input type="text" id="url-input" placeholder="Enter URL..." spellcheck="false">
+        <button id="btn-go">Go</button>
+    </div>
+    <div class="nav-status">
+        <span id="connection-status" class="status-dot disconnected" title="Backend connection"></span>
+    </div>
+</nav>
+
+<!-- ── Tool Panel (left side) ─────────────────────────────────── -->
+<div id="tool-panel">
+
+    <!-- Tab bar -->
+    <div id="tab-bar">
+        <button class="tab active" data-tab="logs">Logs</button>
+        <button class="tab" data-tab="sitemap">Site Map</button>
+        <button class="tab" data-tab="injector">Injector</button>
+    </div>
+
+    <!-- Tab content -->
+    <div id="tab-content">
+
+        <!-- Logs -->
+        <div class="tab-pane active" data-tab="logs">
+            <div class="pane-controls">
+                <input type="text" id="log-search" placeholder="Filter logs...">
+                <select id="log-method-filter">
+                    <option value="">All</option>
+                    <option value="GET">GET</option>
+                    <option value="POST">POST</option>
+                    <option value="PUT">PUT</option>
+                    <option value="DELETE">DELETE</option>
+                    <option value="PATCH">PATCH</option>
+                </select>
+                <button id="btn-clear-logs" title="Clear all logs">Clear</button>
+            </div>
+            <div id="log-list" class="scrollable"></div>
+        </div>
+
+        <!-- Site Map -->
+        <div class="tab-pane" data-tab="sitemap">
+            <div class="pane-controls">
+                <button id="btn-start-crawl">Crawl</button>
+                <button id="btn-stop-crawl" disabled>Stop</button>
+                <span id="crawl-status" class="status-label">Idle</span>
+            </div>
+            <div id="site-tree" class="scrollable"></div>
+        </div>
+
+        <!-- Injector -->
+        <div class="tab-pane" data-tab="injector">
+            <div id="injector-config">
+                <div class="form-group">
+                    <label>Target URL</label>
+                    <input type="text" id="inject-url" placeholder="https://target.com/api/endpoint">
+                </div>
+                <div class="form-row">
+                    <div class="form-group half">
+                        <label>Method</label>
+                        <select id="inject-method">
+                            <option>GET</option><option>POST</option>
+                            <option>PUT</option><option>DELETE</option>
+                        </select>
+                    </div>
+                    <div class="form-group half">
+                        <label>Injector</label>
+                        <select id="inject-type">
+                            <option value="sql">SQL</option>
+                            <option value="aql">AQL</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Params (JSON)</label>
+                    <textarea id="inject-params" rows="2" placeholder='{"key": "value"}'></textarea>
+                </div>
+                <div class="form-group">
+                    <label>Headers (JSON)</label>
+                    <textarea id="inject-headers" rows="2" placeholder='{"Authorization": "Bearer ..."}'></textarea>
+                </div>
+                <div class="form-group">
+                    <label>Body</label>
+                    <textarea id="inject-body" rows="2" placeholder="Request body..."></textarea>
+                </div>
+                <div class="form-group">
+                    <label>Injection Points</label>
+                    <div class="checkbox-group">
+                        <label><input type="checkbox" value="params" checked> Params</label>
+                        <label><input type="checkbox" value="headers"> Headers</label>
+                        <label><input type="checkbox" value="body"> Body</label>
+                    </div>
+                </div>
+                <button id="btn-start-scan" class="btn-primary">Launch Scan</button>
+            </div>
+            <div id="scan-results" class="scrollable"></div>
+        </div>
+    </div>
+
+    <!-- Detail panel (bottom drawer) -->
+    <div id="detail-panel" class="collapsed">
+        <div id="detail-header">
+            <span id="detail-title">Request Details</span>
+            <button id="btn-close-detail">&#10005;</button>
+        </div>
+        <div id="detail-content" class="scrollable">
+            <p class="placeholder-text">Select a request to view details</p>
+        </div>
+    </div>
+</div>
+
+<script src="js/log-viewer.js"></script>
+<script src="js/site-map.js"></script>
+<script src="js/injector-ui.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

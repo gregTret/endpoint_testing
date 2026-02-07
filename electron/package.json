@@ -1,0 +1,12 @@
+{
+  "name": "endpoint-security-tool",
+  "version": "1.0.0",
+  "description": "Endpoint Security Testing Tool — proxy-intercepting browser with injection scanning",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^28.0.0"
+  }
+}
