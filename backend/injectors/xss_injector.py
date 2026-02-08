@@ -25,6 +25,14 @@ class XSSInjector(BaseInjector):
         r"url\s*\(\s*[\"']?javascript:",  # CSS url(javascript:)
     ]
 
+    def generate_quick_payloads(self, context: dict) -> list[str]:
+        c = self._CANARY
+        return [
+            f"<script>{c}</script>",                     # basic reflected XSS
+            f'"><img src=x onerror=alert("{c}")>',       # attribute escape + event handler
+            f"' onfocus='alert(`{c}`)' autofocus='",     # attribute injection
+        ]
+
     def generate_payloads(self, context: dict) -> list[str]:
         c = self._CANARY
         return [

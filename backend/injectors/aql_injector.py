@@ -22,6 +22,12 @@ class AQLInjector(BaseInjector):
         r"expecting.*got",
     ]
 
+    def generate_quick_payloads(self, context: dict) -> list[str]:
+        return [
+            "' //",                     # error-based string termination
+            "' OR 1==1 //",             # boolean tautology
+        ]
+
     def generate_payloads(self, context: dict) -> list[str]:
         return [
             # ── String termination with AQL comment ──
