@@ -90,10 +90,10 @@
 
     /** Clear current UI data and reload from the active workspace */
     function reloadWorkspaceData() {
-        // Clear log viewer and site map
         if (LogViewer.clear) LogViewer.clear();
         if (SiteMap.clear) SiteMap.clear();
         loadExistingLogs();
+        if (SiteMap.loadSaved) SiteMap.loadSaved();
         if (Credentials.loadCreds) Credentials.loadCreds();
         if (InjectorUI.loadHistory) InjectorUI.loadHistory();
     }
@@ -141,7 +141,6 @@
             // Batch-add: reverse so oldest is first, render once at the end
             const reversed = logs.slice().reverse();
             LogViewer.addEntries(reversed);
-            SiteMap.addUrls(reversed.map(l => l.url));
         } catch (_) {
             // Backend might not be up yet — that's fine, WS will stream new ones
             if (logList) logList.innerHTML = '';

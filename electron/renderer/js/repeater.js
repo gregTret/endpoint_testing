@@ -17,7 +17,6 @@ window.Repeater = (() => {
         sendBtn    = document.getElementById('btn-repeater-send');
 
         sendBtn.addEventListener('click', send);
-        document.getElementById('btn-repeater-clear').addEventListener('click', clearAll);
     }
 
     /** Add a request to the repeater history and select it */

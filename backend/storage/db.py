@@ -116,6 +116,20 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS idx_scans_workspace ON scan_results(workspace_id)"
         )
 
+        # ── Site Map URLs (persistent per workspace) ──
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS sitemap_urls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url TEXT NOT NULL,
+                workspace_id TEXT DEFAULT 'default',
+                added_at TEXT NOT NULL,
+                UNIQUE(url, workspace_id)
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sitemap_workspace ON sitemap_urls(workspace_id)"
+        )
+
         await db.commit()
 
 
@@ -167,6 +181,7 @@ async def delete_workspace(workspace_id: str) -> None:
         await db.execute("DELETE FROM request_logs WHERE session_id = ?", (workspace_id,))
         await db.execute("DELETE FROM scan_results WHERE workspace_id = ?", (workspace_id,))
         await db.execute("DELETE FROM credentials WHERE workspace_id = ?", (workspace_id,))
+        await db.execute("DELETE FROM sitemap_urls WHERE workspace_id = ?", (workspace_id,))
         await db.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
         await db.commit()
 
@@ -418,6 +433,64 @@ async def delete_credential(cred_id: int) -> bool:
         await db.execute("DELETE FROM credentials WHERE id=?", (cred_id,))
         await db.commit()
         return True
+
+
+# ── Site Map ──────────────────────────────────────────────────────
+
+
+async def save_sitemap_url(url: str, workspace_id: str = "default"):
+    """Persist a URL to the site map (idempotent)."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO sitemap_urls (url, workspace_id, added_at) VALUES (?, ?, ?)",
+            (url, workspace_id, now),
+        )
+        await db.commit()
+
+
+async def save_sitemap_urls_bulk(urls: list[str], workspace_id: str = "default"):
+    """Persist many URLs at once (idempotent)."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.executemany(
+            "INSERT OR IGNORE INTO sitemap_urls (url, workspace_id, added_at) VALUES (?, ?, ?)",
+            [(u, workspace_id, now) for u in urls],
+        )
+        await db.commit()
+
+
+async def get_sitemap_urls(workspace_id: str = "default") -> list[str]:
+    """Return all saved site map URLs for a workspace."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT url FROM sitemap_urls WHERE workspace_id = ? ORDER BY id",
+            (workspace_id,),
+        )
+        rows = await cursor.fetchall()
+        return [row[0] for row in rows]
+
+
+async def delete_sitemap_url(url: str, workspace_id: str = "default"):
+    """Remove a single URL from the site map."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM sitemap_urls WHERE url = ? AND workspace_id = ?",
+            (url, workspace_id),
+        )
+        await db.commit()
+
+
+async def delete_sitemap_urls_by_prefix(prefix: str, workspace_id: str = "default"):
+    """Remove all URLs matching a prefix (used for removing a host or subtree)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM sitemap_urls WHERE workspace_id = ? AND url LIKE ?",
+            (workspace_id, prefix + "%"),
+        )
+        await db.commit()
 
 
 # ── Helpers ────────────────────────────────────────────────────────

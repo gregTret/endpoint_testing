@@ -20,6 +20,7 @@ window.SiteMap = (() => {
     /** Add a URL to the tree (called for every new request log) */
     function addUrl(urlStr) {
         _insertUrl(urlStr);
+        _persistUrl(urlStr);
         renderTree();
     }
 
@@ -42,7 +43,37 @@ window.SiteMap = (() => {
     /** Batch-add URLs without re-rendering on each one */
     function addUrls(urls) {
         for (const u of urls) _insertUrl(u);
+        _persistUrls(urls);
         renderTree();
+    }
+
+    /** Persist a single URL to the backend */
+    function _persistUrl(url) {
+        fetch(`${API}/sitemap`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url }),
+        }).catch(() => {});
+    }
+
+    /** Persist many URLs to the backend */
+    function _persistUrls(urls) {
+        if (!urls.length) return;
+        fetch(`${API}/sitemap`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ urls }),
+        }).catch(() => {});
+    }
+
+    /** Load saved site map from backend */
+    async function loadSaved() {
+        try {
+            const res = await fetch(`${API}/sitemap`);
+            const urls = await res.json();
+            for (const u of urls) _insertUrl(u);
+            renderTree();
+        } catch (_) {}
     }
 
     function renderTree() {
@@ -221,9 +252,11 @@ window.SiteMap = (() => {
     }
 
     function removeNode(host, pathParts) {
+        let prefix;
         if (!pathParts || pathParts.length === 0) {
             // Removing an entire host
             delete treeData[host];
+            prefix = 'https://' + host;
         } else {
             // Walk to the parent and delete the child key
             let node = treeData[host];
@@ -234,7 +267,10 @@ window.SiteMap = (() => {
                 parent = parent[pathParts[i]]._children;
             }
             delete parent[pathParts[pathParts.length - 1]];
+            prefix = 'https://' + host + '/' + pathParts.join('/');
         }
+        // Delete from backend
+        fetch(`${API}/sitemap?prefix=${encodeURIComponent(prefix)}`, { method: 'DELETE' }).catch(() => {});
         renderTree();
     }
 
@@ -256,5 +292,5 @@ window.SiteMap = (() => {
         renderTree();
     }
 
-    return { init, addUrl, addUrls, clear };
+    return { init, addUrl, addUrls, loadSaved, clear };
 })();

@@ -14,6 +14,11 @@ from storage.db import (
     get_scan_results,
     get_scan_results_by_workspace,
     delete_scan_history_by_workspace,
+    save_sitemap_url,
+    save_sitemap_urls_bulk,
+    get_sitemap_urls,
+    delete_sitemap_url,
+    delete_sitemap_urls_by_prefix,
     export_session,
     save_credential,
     get_credentials,
@@ -307,6 +312,37 @@ async def scan_history(limit: int = 500):
 async def clear_scan_history():
     """Delete all scan results for the active workspace."""
     await delete_scan_history_by_workspace(_active_workspace)
+    return {"ok": True}
+
+
+# ──────────────────────────── Site Map ────────────────────────────────────
+
+
+@router.get("/sitemap")
+async def sitemap_list():
+    """Return all persisted site map URLs for the active workspace."""
+    return await get_sitemap_urls(_active_workspace)
+
+
+@router.post("/sitemap")
+async def sitemap_add(body: dict):
+    """Add one or more URLs to the site map."""
+    urls = body.get("urls", [])
+    url = body.get("url")
+    if url:
+        urls.append(url)
+    if urls:
+        await save_sitemap_urls_bulk(urls, _active_workspace)
+    return {"ok": True, "count": len(urls)}
+
+
+@router.delete("/sitemap")
+async def sitemap_remove(url: str = "", prefix: str = ""):
+    """Remove a single URL or all URLs matching a prefix."""
+    if prefix:
+        await delete_sitemap_urls_by_prefix(prefix, _active_workspace)
+    elif url:
+        await delete_sitemap_url(url, _active_workspace)
     return {"ok": True}
 
 
