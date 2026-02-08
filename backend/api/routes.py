@@ -38,6 +38,7 @@ from injectors.sql_injector import SQLInjector
 from injectors.aql_injector import AQLInjector
 from injectors.xss_injector import XSSInjector
 from injectors.mongo_injector import MongoInjector
+from injectors.jwt_injector import JWTInjector
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -48,6 +49,7 @@ INJECTORS = {
     "aql": AQLInjector,
     "xss": XSSInjector,
     "mongo": MongoInjector,
+    "jwt": JWTInjector,
 }
 
 # Spider reference — set by main.py at startup
