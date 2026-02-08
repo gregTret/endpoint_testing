@@ -1,61 +1,38 @@
 # Endpoint Security Tool
 
-A BurpSuite-alternative endpoint security testing tool built with **Electron** (UI), **FastAPI** (backend), **mitmproxy** (HTTP/S interception), and **Playwright** (crawling).
+Custom BurpSuite alternative. Electron UI + FastAPI backend + mitmproxy interception.
 
 ## Features
 
-- **Embedded browser** with all traffic routed through an intercepting proxy
-- **Real-time request/response logging** with filtering and search
-- **Site map** auto-built from observed traffic + optional spider crawl
-- **SQL injection scanner** — error-based, UNION, boolean-blind, time-blind
-- **AQL injection scanner** — ArangoDB-specific payloads
-- **Extensible injector framework** — add new DB types by subclassing `BaseInjector`
-- **Request replay** — re-send any captured request
-- **Session export** — dump all logs and scan results to JSON
-
-## Prerequisites
-
-- Python 3.11+
-- Node.js 18+
-- npm
+- Embedded browser with HTTP/S traffic interception and logging
+- Persistent site map with crawl/spider support
+- Injection scanners: SQL, AQL (ArangoDB), MongoDB NoSQL, XSS
+- Repeater for manual request editing and resending
+- Workspace system — isolated sessions, credentials, scan history, site maps
+- Encrypted credential storage per workspace
+- Extensible injector framework (subclass `BaseInjector`)
 
 ## Setup
 
-### Backend
-
 ```bash
+# Backend
 cd backend
 pip install -r requirements.txt
 playwright install chromium
-```
 
-### Frontend
-
-```bash
+# Frontend
 cd electron
 npm install
 ```
 
-## Running
-
-The Electron app automatically starts the Python backend:
+## Run
 
 ```bash
 cd electron
 npm start
 ```
 
-Or run them separately:
-
-```bash
-# Terminal 1 — backend
-cd backend
-uvicorn main:app --host 127.0.0.1 --port 8000
-
-# Terminal 2 — frontend
-cd electron
-npm start
-```
+The Electron app launches the Python backend automatically.
 
 ## Architecture
 
@@ -65,30 +42,12 @@ Electron (BrowserView → mitmproxy → target)
 FastAPI backend
     ├── mitmproxy (intercept + log)
     ├── Playwright (spider/crawler)
-    └── Injectors (SQL, AQL, ...)
+    ├── Injectors (SQL, AQL, MongoDB, XSS)
+    └── SQLite (logs, scans, credentials, site map)
 ```
 
-## Adding a New Injector
+## Adding an Injector
 
-1. Create `backend/injectors/my_injector.py`
-2. Subclass `BaseInjector` from `injectors.base`
-3. Implement `generate_payloads()` and `analyze_response()`
-4. Register it in `api/routes.py` → `INJECTORS` dict
-
-## API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/logs` | List request logs (supports `method`, `host`, `status`, `search` filters) |
-| GET | `/api/logs/{id}` | Get single log entry |
-| DELETE | `/api/logs` | Clear all logs |
-| POST | `/api/crawl?url=...` | Start spider crawl |
-| GET | `/api/crawl/status` | Crawl progress |
-| POST | `/api/crawl/stop` | Stop crawl |
-| GET | `/api/crawl/results` | Crawl discovered URLs + forms |
-| GET | `/api/injectors` | List available injector modules |
-| POST | `/api/scan` | Launch injection scan (body: `ScanConfig` JSON) |
-| GET | `/api/scan/results` | Fetch scan results |
-| POST | `/api/replay/{id}` | Replay a captured request |
-| POST | `/api/session/export` | Export full session to JSON |
-| WS | `/ws` | Real-time log stream |
+1. Create `backend/injectors/my_injector.py`, subclass `BaseInjector`
+2. Implement `generate_payloads()` and `analyze_response()`
+3. Register in `api/routes.py` → `INJECTORS` dict
