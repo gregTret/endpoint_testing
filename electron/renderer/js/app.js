@@ -183,15 +183,21 @@
             </div>`;
         }).join('');
 
-        // Checkboxes
+        // Checkboxes — update config in memory only (applied on Save)
         container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
             cb.addEventListener('change', () => {
                 const idx = Number(cb.dataset.idx);
                 tabConfig[idx].visible = cb.checked;
-                saveTabConfig();
-                renderTabBar();
             });
         });
+
+        // Save button
+        document.getElementById('btn-save-tab-config').onclick = () => {
+            saveTabConfig();
+            renderTabBar();
+            // Stay on settings tab
+            switchTab('settings');
+        };
 
         // Drag and drop reorder
         let dragIdx = null;
@@ -221,8 +227,6 @@
                 const moved = tabConfig.splice(dragIdx, 1)[0];
                 tabConfig.splice(dropIdx, 0, moved);
                 dragIdx = null;
-                saveTabConfig();
-                renderTabBar();
                 renderTabConfigUI();
             });
         });
