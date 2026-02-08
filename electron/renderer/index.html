@@ -48,14 +48,8 @@
 <!-- ── Tool Panel (left side) ─────────────────────────────────── -->
 <div id="tool-panel" class="hidden">
 
-    <!-- Tab bar -->
-    <div id="tab-bar">
-        <button class="tab active" data-tab="logs">Logs</button>
-        <button class="tab" data-tab="sitemap">Site Map</button>
-        <button class="tab" data-tab="injector">Injector</button>
-        <button class="tab" data-tab="repeater">Repeater</button>
-        <button class="tab" data-tab="settings">Settings</button>
-    </div>
+    <!-- Tab bar (rendered dynamically by app.js) -->
+    <div id="tab-bar"></div>
 
     <!-- Tab content -->
     <div id="tab-content">
@@ -183,6 +177,13 @@
         <!-- Credentials -->
         <div class="tab-pane" data-tab="settings">
             <div class="settings-scroll scrollable">
+
+                <!-- Tab Configuration -->
+                <div class="settings-section">
+                    <div class="settings-section-title">Tabs</div>
+                    <p style="font-size:11px;color:var(--text-dim);margin-bottom:8px">Drag to reorder. Uncheck to hide. Settings tab is always visible.</p>
+                    <div id="tab-config-list"></div>
+                </div>
 
                 <!-- Data Management -->
                 <div class="settings-section">

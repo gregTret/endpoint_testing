@@ -948,5 +948,41 @@ html, body {
     background: var(--accent);
 }
 
+/* ── Tab Config (Settings) ────────────────────────────────────────── */
+.tab-config-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    margin-bottom: 2px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    cursor: grab;
+    font-size: 12px;
+    user-select: none;
+    transition: background .1s, border-color .1s;
+}
+.tab-config-item:active { cursor: grabbing; }
+.tab-config-item.drag-over {
+    border-color: var(--accent);
+    background: var(--accent-dim);
+}
+.tab-config-item .drag-handle {
+    color: var(--text-dim);
+    font-size: 14px;
+    flex-shrink: 0;
+}
+.tab-config-item label {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+}
+.tab-config-item input[type="checkbox"] {
+    cursor: pointer;
+}
+
 /* ── Utility ──────────────────────────────────────────────────────── */
 .hidden { display: none !important; }

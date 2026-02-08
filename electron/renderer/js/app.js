@@ -5,6 +5,7 @@
  * - After workspace selected: connects WebSocket, inits sub-modules
  * - Dispatches events to LogViewer / SiteMap / InjectorUI
  * - Handles tab switching + URL bar navigation
+ * - Manages per-workspace tab configuration (order + visibility)
  */
 (function () {
     const WS_URL = 'ws://127.0.0.1:8000/ws';
@@ -12,6 +13,17 @@
     let ws = null;
     let statusDot;
     let mainInitialised = false;
+
+    // ── Tab definitions (default order) ─────────────────────────────
+    const ALL_TABS = [
+        { id: 'logs',     label: 'Logs' },
+        { id: 'sitemap',  label: 'Site Map' },
+        { id: 'injector', label: 'Injector' },
+        { id: 'repeater', label: 'Repeater' },
+        { id: 'settings', label: 'Settings' },
+    ];
+
+    let tabConfig = []; // [{ id, visible }] — current workspace config
 
     // ── Bootstrap ──────────────────────────────────────────────────
 
@@ -24,7 +36,6 @@
         // "Switch Workspace" button
         document.getElementById('btn-switch-ws').addEventListener('click', () => {
             Workspace.show();
-            // Close WS so we stop streaming old workspace data
             if (ws) { ws.onclose = null; ws.close(); ws = null; }
         });
     });
@@ -35,6 +46,11 @@
             initMainUI();
             mainInitialised = true;
         }
+
+        // Load tab config for this workspace
+        loadTabConfig();
+        renderTabBar();
+        renderTabConfigUI();
 
         // Reconnect WS + reload data for the new workspace
         if (ws) { ws.onclose = null; ws.close(); ws = null; }
@@ -49,11 +65,6 @@
         Credentials.init();
         InjectorUI.init();
         Repeater.init();
-
-        // Tab switching
-        document.querySelectorAll('#tab-bar .tab').forEach(tab => {
-            tab.addEventListener('click', () => switchTab(tab.dataset.tab));
-        });
 
         // URL bar
         document.getElementById('btn-go').addEventListener('click', navigate);
@@ -72,8 +83,6 @@
             Workspace.saveLastUrl(url);
         });
 
-        // Right-click context menus on log entries are handled inside log-viewer.js
-
         // Settings — clear buttons
         document.getElementById('btn-clear-injector-history').addEventListener('click', () => {
             if (!confirm('Clear all injector scan history?')) return;
@@ -84,7 +93,7 @@
             if (Repeater.clearAll) Repeater.clearAll();
         });
 
-        // ── Panel resize drag handle ────────────────────────────────
+        // Panel resize drag handle
         initPanelResize();
     }
 
@@ -96,6 +105,127 @@
         if (SiteMap.loadSaved) SiteMap.loadSaved();
         if (Credentials.loadCreds) Credentials.loadCreds();
         if (InjectorUI.loadHistory) InjectorUI.loadHistory();
+        if (Repeater.loadHistory) Repeater.loadHistory();
+    }
+
+    // ── Tab Config ──────────────────────────────────────────────────
+
+    function _configKey() {
+        const wsId = Workspace.getActiveId() || 'default';
+        return `ws_tabConfig_${wsId}`;
+    }
+
+    function loadTabConfig() {
+        const raw = localStorage.getItem(_configKey());
+        if (raw) {
+            try {
+                const saved = JSON.parse(raw);
+                // Merge: keep saved order/visibility, add any new tabs not yet in config
+                const savedIds = new Set(saved.map(t => t.id));
+                tabConfig = saved.filter(t => ALL_TABS.some(a => a.id === t.id));
+                for (const t of ALL_TABS) {
+                    if (!savedIds.has(t.id)) {
+                        tabConfig.push({ id: t.id, visible: true });
+                    }
+                }
+                return;
+            } catch (_) {}
+        }
+        // Default: all visible in default order
+        tabConfig = ALL_TABS.map(t => ({ id: t.id, visible: true }));
+    }
+
+    function saveTabConfig() {
+        localStorage.setItem(_configKey(), JSON.stringify(tabConfig));
+    }
+
+    function renderTabBar() {
+        const bar = document.getElementById('tab-bar');
+        bar.innerHTML = '';
+        const visibleTabs = tabConfig.filter(t => t.visible);
+        // Settings is always shown, ensure it's in the list
+        if (!visibleTabs.some(t => t.id === 'settings')) {
+            visibleTabs.push({ id: 'settings', visible: true });
+        }
+
+        visibleTabs.forEach((t, i) => {
+            const def = ALL_TABS.find(a => a.id === t.id);
+            if (!def) return;
+            const btn = document.createElement('button');
+            btn.className = 'tab' + (i === 0 ? ' active' : '');
+            btn.dataset.tab = t.id;
+            btn.textContent = def.label;
+            btn.addEventListener('click', () => switchTab(t.id));
+            bar.appendChild(btn);
+        });
+
+        // Show first visible tab's pane
+        const firstTab = visibleTabs[0]?.id || 'logs';
+        document.querySelectorAll('.tab-pane').forEach(p => {
+            p.classList.toggle('active', p.dataset.tab === firstTab);
+        });
+    }
+
+    function renderTabConfigUI() {
+        const container = document.getElementById('tab-config-list');
+        if (!container) return;
+
+        container.innerHTML = tabConfig.map((t, i) => {
+            const def = ALL_TABS.find(a => a.id === t.id);
+            if (!def) return '';
+            const isSettings = t.id === 'settings';
+            return `<div class="tab-config-item" draggable="true" data-idx="${i}">
+                <span class="drag-handle">⠿</span>
+                <label>
+                    <input type="checkbox" ${t.visible ? 'checked' : ''} ${isSettings ? 'disabled checked' : ''} data-idx="${i}">
+                    ${def.label}
+                </label>
+            </div>`;
+        }).join('');
+
+        // Checkboxes
+        container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+            cb.addEventListener('change', () => {
+                const idx = Number(cb.dataset.idx);
+                tabConfig[idx].visible = cb.checked;
+                saveTabConfig();
+                renderTabBar();
+            });
+        });
+
+        // Drag and drop reorder
+        let dragIdx = null;
+        container.querySelectorAll('.tab-config-item').forEach(item => {
+            item.addEventListener('dragstart', (e) => {
+                dragIdx = Number(item.dataset.idx);
+                e.dataTransfer.effectAllowed = 'move';
+                item.style.opacity = '0.4';
+            });
+            item.addEventListener('dragend', () => {
+                item.style.opacity = '';
+                container.querySelectorAll('.tab-config-item').forEach(el => el.classList.remove('drag-over'));
+            });
+            item.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                item.classList.add('drag-over');
+            });
+            item.addEventListener('dragleave', () => {
+                item.classList.remove('drag-over');
+            });
+            item.addEventListener('drop', (e) => {
+                e.preventDefault();
+                item.classList.remove('drag-over');
+                const dropIdx = Number(item.dataset.idx);
+                if (dragIdx === null || dragIdx === dropIdx) return;
+                const moved = tabConfig.splice(dragIdx, 1)[0];
+                tabConfig.splice(dropIdx, 0, moved);
+                dragIdx = null;
+                saveTabConfig();
+                renderTabBar();
+                renderTabConfigUI();
+            });
+        });
     }
 
     // ── WebSocket ──────────────────────────────────────────────────
@@ -138,11 +268,9 @@
         try {
             const res = await fetch(`${API}/logs?limit=500`);
             const logs = await res.json();
-            // Batch-add: reverse so oldest is first, render once at the end
             const reversed = logs.slice().reverse();
             LogViewer.addEntries(reversed);
         } catch (_) {
-            // Backend might not be up yet — that's fine, WS will stream new ones
             if (logList) logList.innerHTML = '';
         }
     }

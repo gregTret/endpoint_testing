@@ -130,6 +130,22 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS idx_sitemap_workspace ON sitemap_urls(workspace_id)"
         )
 
+        # ── Repeater history (persistent per workspace) ──
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS repeater_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                method TEXT NOT NULL DEFAULT 'GET',
+                url TEXT NOT NULL,
+                headers TEXT DEFAULT '{}',
+                body TEXT DEFAULT '',
+                workspace_id TEXT DEFAULT 'default',
+                created_at TEXT NOT NULL
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_repeater_workspace ON repeater_history(workspace_id)"
+        )
+
         await db.commit()
 
 
@@ -182,6 +198,7 @@ async def delete_workspace(workspace_id: str) -> None:
         await db.execute("DELETE FROM scan_results WHERE workspace_id = ?", (workspace_id,))
         await db.execute("DELETE FROM credentials WHERE workspace_id = ?", (workspace_id,))
         await db.execute("DELETE FROM sitemap_urls WHERE workspace_id = ?", (workspace_id,))
+        await db.execute("DELETE FROM repeater_history WHERE workspace_id = ?", (workspace_id,))
         await db.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
         await db.commit()
 
@@ -490,6 +507,52 @@ async def delete_sitemap_urls_by_prefix(prefix: str, workspace_id: str = "defaul
             "DELETE FROM sitemap_urls WHERE workspace_id = ? AND url LIKE ?",
             (workspace_id, prefix + "%"),
         )
+        await db.commit()
+
+
+# ── Repeater History ──────────────────────────────────────────────
+
+
+async def save_repeater_entry(entry: dict, workspace_id: str = "default") -> int:
+    """Persist a repeater request. Returns the new row ID."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    headers = entry.get("headers", {})
+    if isinstance(headers, dict):
+        headers = json.dumps(headers)
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "INSERT INTO repeater_history (method, url, headers, body, workspace_id, created_at) VALUES (?,?,?,?,?,?)",
+            (entry.get("method", "GET"), entry.get("url", ""), headers,
+             entry.get("body", ""), workspace_id, now),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_repeater_history(workspace_id: str = "default", limit: int = 50) -> list[dict]:
+    """Fetch repeater history for a workspace."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM repeater_history WHERE workspace_id = ? ORDER BY id DESC LIMIT ?",
+            (workspace_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def delete_repeater_history(workspace_id: str = "default"):
+    """Delete all repeater history for a workspace."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM repeater_history WHERE workspace_id = ?", (workspace_id,))
+        await db.commit()
+
+
+async def delete_repeater_entry(entry_id: int):
+    """Delete a single repeater entry by ID."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM repeater_history WHERE id = ?", (entry_id,))
         await db.commit()
 
 
