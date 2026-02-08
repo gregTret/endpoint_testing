@@ -240,5 +240,11 @@ window.SiteMap = (() => {
         document.querySelectorAll('.tab-pane').forEach(p => p.classList.toggle('active', p.dataset.tab === tabName));
     }
 
-    return { init, addUrl };
+    /** Reset the tree (used on workspace switch) */
+    function clear() {
+        treeData = {};
+        renderTree();
+    }
+
+    return { init, addUrl, clear };
 })();

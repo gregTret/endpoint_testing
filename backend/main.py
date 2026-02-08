@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import QUEUE_POLL_INTERVAL, QUEUE_POLL_ERROR_DELAY
 from proxy.proxy_manager import ProxyManager
 from crawler.spider import Spider
-from api.routes import router, set_spider
+from api.routes import router, set_spider, get_active_workspace
 from api.websocket import ws_router, manager
 from storage.db import init_db, save_request_log
 
@@ -21,7 +21,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── Shared instances ───────────────────────────────────────────────
-proxy = ProxyManager()
+proxy = ProxyManager(workspace_getter=get_active_workspace)
 spider = Spider()
 
 

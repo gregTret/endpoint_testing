@@ -7,4 +7,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     refresh:       ()    => ipcRenderer.send('refresh'),
     getCurrentUrl: ()    => ipcRenderer.invoke('get-current-url'),
     onUrlChanged:  (cb)  => ipcRenderer.on('url-changed', (_e, url) => cb(url)),
+    showBrowser:   (wsId) => ipcRenderer.send('show-browser', wsId),
+    hideBrowser:   ()    => ipcRenderer.send('hide-browser'),
 });

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import time
@@ -6,13 +7,23 @@ from datetime import datetime, timezone
 
 import httpx
 
-from config import SCAN_DEFAULT_TIMEOUT, SCAN_RESPONSE_CAP
+from config import SCAN_DEFAULT_TIMEOUT, SCAN_RESPONSE_CAP, PROXY_HOST, PROXY_PORT
 from models.scan_config import ScanResult, VulnerabilityReport
 
 log = logging.getLogger(__name__)
 
 # Headers that should never be used as injection targets
 _SKIP_HEADERS = frozenset({"host", "content-type", "content-length", "transfer-encoding"})
+
+# Headers managed by httpx — sending them alongside httpx's own values
+# can produce duplicates that confuse servers / reverse proxies
+_DROP_HEADERS = frozenset({
+    "host", "content-length", "transfer-encoding", "connection",
+    "accept-encoding",
+})
+
+# Marker header so the mitmproxy addon skips logging scan traffic
+_SCAN_MARKER = {"x-ept-scan": "1"}
 
 
 class BaseInjector(ABC):
@@ -60,6 +71,7 @@ class BaseInjector(ABC):
         target_keys: list[str] | None = None,
         timeout: float = SCAN_DEFAULT_TIMEOUT,
         on_result=None,
+        control: dict | None = None,
     ) -> list[ScanResult]:
         """Run every payload × every injectable field and return results.
 
@@ -68,11 +80,15 @@ class BaseInjector(ABC):
 
         *on_result*: optional async callback(result, index, total) called
         after each individual test completes, for real-time progress.
+
+        *control*: mutable dict with a ``signal`` key. Checked between
+        each request.  ``"pause"`` suspends, ``"stop"`` aborts.
         """
         params = params or {}
         headers = headers or {}
         injection_points = injection_points or ["params"]
         results: list[ScanResult] = []
+        ctrl = control or {"signal": "run"}
 
         baseline = await self._send_request(url, method, params, headers, body, timeout)
         payloads = self.generate_payloads(
@@ -84,10 +100,20 @@ class BaseInjector(ABC):
         targets = _build_targets(injection_points, params, headers, body, target_keys)
         total = len(payloads) * len(targets)
 
+        proxy_url = f"http://{PROXY_HOST}:{PROXY_PORT}"
         idx = 0
-        async with httpx.AsyncClient(verify=False, timeout=timeout) as client:
+        async with httpx.AsyncClient(verify=False, timeout=timeout, proxy=proxy_url) as client:
             for payload in payloads:
                 for point, key in targets:
+                    # ── Check control signal ──────────────────
+                    while ctrl.get("signal") == "pause":
+                        await asyncio.sleep(0.5)
+                    if ctrl.get("signal") == "stop":
+                        log.info("scan stopped by user at %d/%d", idx, total)
+                        self.results.extend(results)
+                        return results
+                    # ──────────────────────────────────────────
+
                     result = await self._test_single(
                         client, url, method, params, headers, body,
                         payload, point, key, baseline,
@@ -117,11 +143,12 @@ class BaseInjector(ABC):
     ) -> ScanResult:
         """Send one request with *payload* injected at *target_key*."""
         mod_params = dict(params)
-        # Strip hop-by-hop / size headers so httpx recalculates them
+        # Strip headers that httpx auto-generates to avoid duplicates
         mod_headers = {
             k: v for k, v in headers.items()
-            if k.lower() not in ("content-length", "transfer-encoding")
+            if k.lower() not in _DROP_HEADERS
         }
+        mod_headers.update(_SCAN_MARKER)
         mod_body = body
         send_json = False
 
@@ -133,23 +160,27 @@ class BaseInjector(ABC):
             # JSON-aware: replace a single key inside a JSON body
             mod_body, send_json = _inject_into_body(body, target_key, payload)
 
+        # Capture what we're about to send so it's visible in results
+        sent_body = mod_body
+        if send_json:
+            try:
+                sent_body = json.dumps(json.loads(mod_body), indent=2)
+            except Exception:
+                pass
+        sent_headers_str = json.dumps(mod_headers, indent=2)
+
         start = time.time()
         try:
             if method.upper() == "GET":
                 resp = await client.get(url, params=mod_params, headers=mod_headers)
-            elif send_json:
-                resp = await client.request(
-                    method, url,
-                    params=mod_params,
-                    headers=mod_headers,
-                    json=json.loads(mod_body),
-                )
             else:
+                # Always use content= (raw body) so the Content-Type from
+                # captured headers is used as-is — no conflicts with json=
                 resp = await client.request(
                     method, url,
                     params=mod_params,
                     headers=mod_headers,
-                    content=mod_body,
+                    content=mod_body.encode("utf-8") if mod_body else b"",
                 )
             elapsed = round((time.time() - start) * 1000, 2)
             resp_body = resp.text[:SCAN_RESPONSE_CAP]
@@ -175,6 +206,8 @@ class BaseInjector(ABC):
                 response_code=resp.status_code,
                 response_body=resp_body,
                 response_time_ms=elapsed,
+                request_headers=sent_headers_str,
+                request_body=sent_body,
                 is_vulnerable=report.is_vulnerable,
                 confidence=report.confidence,
                 details=report.details,
@@ -190,6 +223,8 @@ class BaseInjector(ABC):
                 original_param=target_key,
                 response_code=0,
                 response_body=str(e),
+                request_headers=sent_headers_str,
+                request_body=sent_body,
                 is_vulnerable=False,
                 confidence="low",
                 details=f"Request failed: {e}",
@@ -202,16 +237,19 @@ class BaseInjector(ABC):
         """Fire a baseline (unmodified) request."""
         clean_headers = {
             k: v for k, v in headers.items()
-            if k.lower() not in ("content-length", "transfer-encoding")
+            if k.lower() not in _DROP_HEADERS
         }
+        clean_headers.update(_SCAN_MARKER)
+        proxy_url = f"http://{PROXY_HOST}:{PROXY_PORT}"
         start = time.time()
         try:
-            async with httpx.AsyncClient(verify=False, timeout=timeout) as client:
+            async with httpx.AsyncClient(verify=False, timeout=timeout, proxy=proxy_url) as client:
                 if method.upper() == "GET":
                     resp = await client.get(url, params=params, headers=clean_headers)
                 else:
                     resp = await client.request(
-                        method, url, params=params, headers=clean_headers, content=body,
+                        method, url, params=params, headers=clean_headers,
+                        content=body.encode("utf-8") if body else b"",
                     )
                 elapsed = round((time.time() - start) * 1000, 2)
                 return {
@@ -235,7 +273,10 @@ def _build_targets(
     If *target_keys* is provided and non-empty, only include keys
     that appear in that list.  Otherwise test everything.
     """
-    allowed = set(target_keys) if target_keys else None
+    # None = no filter (inject all), [] = explicitly empty (inject nothing)
+    if target_keys is not None and len(target_keys) == 0:
+        return []
+    allowed = set(target_keys) if target_keys is not None else None
     targets: list[tuple[str, str]] = []
 
     for point in injection_points:
@@ -311,7 +352,13 @@ def _inject_into_body(body: str, target_key: str, payload: str) -> tuple[str, bo
         return payload, False
 
     # Handle dot-notation for nested keys: "user.name" → data["user"]["name"]
-    _set_nested(data, target_key, payload)
+    # If the payload is valid JSON (object/array), inject it as a parsed
+    # value so {"$ne": null} becomes an actual object, not a string.
+    try:
+        parsed_payload = json.loads(payload)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        parsed_payload = payload
+    _set_nested(data, target_key, parsed_payload)
     return json.dumps(data), True
 
 

@@ -12,6 +12,16 @@ log = logging.getLogger(__name__)
 async def init_db():
     """Create tables if they don't exist."""
     async with aiosqlite.connect(DB_PATH) as db:
+        # ── Workspaces ──
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS workspaces (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_opened_at TEXT NOT NULL
+            )
+        """)
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS request_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,15 +58,6 @@ async def init_db():
                 session_id TEXT DEFAULT 'default'
             )
         """)
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_logs_session ON request_logs(session_id)"
-        )
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_logs_host ON request_logs(host)"
-        )
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_scans_session ON scan_results(session_id)"
-        )
         await db.execute("""
             CREATE TABLE IF NOT EXISTS credentials (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,13 +67,107 @@ async def init_db():
                 token TEXT DEFAULT '',
                 auth_type TEXT DEFAULT 'basic',
                 notes TEXT DEFAULT '',
+                workspace_id TEXT DEFAULT 'default',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
         """)
+
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_logs_session ON request_logs(session_id)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_logs_host ON request_logs(host)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_scans_session ON scan_results(session_id)"
+        )
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_creds_site ON credentials(site)"
         )
+
+        # Migration: add workspace_id to credentials if missing (must run before index)
+        try:
+            await db.execute("SELECT workspace_id FROM credentials LIMIT 1")
+        except Exception:
+            await db.execute("ALTER TABLE credentials ADD COLUMN workspace_id TEXT DEFAULT 'default'")
+            log.info("migrated credentials table: added workspace_id column")
+
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_creds_workspace ON credentials(workspace_id)"
+        )
+
+        # Migration: add request_headers / request_body to scan_results if missing
+        try:
+            await db.execute("SELECT request_headers FROM scan_results LIMIT 1")
+        except Exception:
+            await db.execute("ALTER TABLE scan_results ADD COLUMN request_headers TEXT DEFAULT ''")
+            await db.execute("ALTER TABLE scan_results ADD COLUMN request_body TEXT DEFAULT ''")
+            log.info("migrated scan_results table: added request_headers, request_body")
+
+        # Migration: add workspace_id to scan_results if missing
+        try:
+            await db.execute("SELECT workspace_id FROM scan_results LIMIT 1")
+        except Exception:
+            await db.execute("ALTER TABLE scan_results ADD COLUMN workspace_id TEXT DEFAULT 'default'")
+            log.info("migrated scan_results table: added workspace_id")
+
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_scans_workspace ON scan_results(workspace_id)"
+        )
+
+        await db.commit()
+
+
+# ── Workspace CRUD ────────────────────────────────────────────────
+
+
+async def create_workspace(workspace_id: str, name: str) -> dict:
+    """Create a new workspace."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO workspaces (id, name, created_at, last_opened_at) VALUES (?, ?, ?, ?)",
+            (workspace_id, name, now, now),
+        )
+        await db.commit()
+    return {"id": workspace_id, "name": name, "created_at": now, "last_opened_at": now}
+
+
+async def list_workspaces() -> list[dict]:
+    """Return all workspaces, most recently opened first."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM workspaces ORDER BY last_opened_at DESC")
+        return [dict(row) for row in await cursor.fetchall()]
+
+
+async def update_workspace_opened(workspace_id: str) -> None:
+    """Touch the last_opened_at timestamp."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE workspaces SET last_opened_at = ? WHERE id = ?", (now, workspace_id)
+        )
+        await db.commit()
+
+
+async def rename_workspace(workspace_id: str, name: str) -> None:
+    """Rename a workspace."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE workspaces SET name = ? WHERE id = ?", (name, workspace_id))
+        await db.commit()
+
+
+async def delete_workspace(workspace_id: str) -> None:
+    """Delete a workspace and CASCADE all its data."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM request_logs WHERE session_id = ?", (workspace_id,))
+        await db.execute("DELETE FROM scan_results WHERE workspace_id = ?", (workspace_id,))
+        await db.execute("DELETE FROM credentials WHERE workspace_id = ?", (workspace_id,))
+        await db.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
         await db.commit()
 
 
@@ -176,8 +271,9 @@ async def save_scan_result(result: dict) -> int:
             INSERT INTO scan_results
             (timestamp, target_url, injector_type, payload, injection_point,
              original_param, response_code, response_body, response_time_ms,
-             is_vulnerable, confidence, details, session_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             is_vulnerable, confidence, details, session_id,
+             request_headers, request_body, workspace_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             result.get("timestamp", ""),
             result.get("target_url", ""),
@@ -192,6 +288,9 @@ async def save_scan_result(result: dict) -> int:
             result.get("confidence", "low"),
             result.get("details", ""),
             result.get("session_id", "default"),
+            result.get("request_headers", ""),
+            result.get("request_body", ""),
+            result.get("workspace_id", "default"),
         ))
         await db.commit()
         return cursor.lastrowid
@@ -200,12 +299,26 @@ async def save_scan_result(result: dict) -> int:
 async def get_scan_results(
     session_id: str = "default", limit: int = 200
 ) -> list[dict]:
-    """Fetch injection scan results."""
+    """Fetch injection scan results by scan session_id (for live polling)."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             "SELECT * FROM scan_results WHERE session_id = ? ORDER BY id DESC LIMIT ?",
             (session_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def get_scan_results_by_workspace(
+    workspace_id: str = "default", limit: int = 500
+) -> list[dict]:
+    """Fetch all injection scan results for a workspace (history)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM scan_results WHERE workspace_id = ? ORDER BY id DESC LIMIT ?",
+            (workspace_id, limit),
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -226,14 +339,14 @@ from storage.crypto import encrypt, decrypt
 _SENSITIVE_FIELDS = ("password", "token")
 
 
-async def save_credential(cred: dict) -> int:
+async def save_credential(cred: dict, workspace_id: str = "default") -> int:
     """Save a credential entry. Sensitive fields are encrypted."""
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc).isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("""
-            INSERT INTO credentials (site, username, password, token, auth_type, notes, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO credentials (site, username, password, token, auth_type, notes, workspace_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             cred.get("site", ""),
             cred.get("username", ""),
@@ -241,23 +354,27 @@ async def save_credential(cred: dict) -> int:
             encrypt(cred.get("token", "")),
             cred.get("auth_type", "basic"),
             cred.get("notes", ""),
+            workspace_id,
             now, now,
         ))
         await db.commit()
         return cursor.lastrowid
 
 
-async def get_credentials(site_filter: str = None) -> list[dict]:
-    """Fetch all credentials, decrypting sensitive fields."""
+async def get_credentials(workspace_id: str = "default", site_filter: str = None) -> list[dict]:
+    """Fetch credentials for a workspace, decrypting sensitive fields."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         if site_filter:
             cursor = await db.execute(
-                "SELECT * FROM credentials WHERE site LIKE ? ORDER BY updated_at DESC",
-                (f"%{site_filter}%",),
+                "SELECT * FROM credentials WHERE workspace_id = ? AND site LIKE ? ORDER BY updated_at DESC",
+                (workspace_id, f"%{site_filter}%"),
             )
         else:
-            cursor = await db.execute("SELECT * FROM credentials ORDER BY updated_at DESC")
+            cursor = await db.execute(
+                "SELECT * FROM credentials WHERE workspace_id = ? ORDER BY updated_at DESC",
+                (workspace_id,),
+            )
         rows = [dict(row) for row in await cursor.fetchall()]
         for row in rows:
             row["password"] = decrypt(row.get("password", ""))

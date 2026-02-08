@@ -126,6 +126,20 @@ class MongoInjector(BaseInjector):
             or body_stripped == "[]"
         )
 
+        # Helper: server properly rejected the input (validation error, not a vuln).
+        # Only suppresses ambiguous behavioural checks — NEVER overrides
+        # error-pattern or time-based findings already detected above.
+        is_rejection = (400 <= test_status < 500)
+
+        # If error/time checks already found something definitive, skip rejection logic
+        if is_rejection and not is_vulnerable:
+            return VulnerabilityReport(
+                is_vulnerable=False,
+                confidence="low",
+                details="Server rejected input (validation — not a vuln)",
+                evidence=evidence,
+            )
+
         # 3. Tautology — operator payload returned data equal to or larger than baseline
         #    A REAL vuln: {"$ne":""} returns the same data as a valid ID, meaning
         #    the operator was evaluated by MongoDB instead of treated as a literal.

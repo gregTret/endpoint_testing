@@ -28,6 +28,8 @@ class ScanResult(BaseModel):
     response_code: int = 0
     response_body: str = ""
     response_time_ms: float = 0.0
+    request_headers: str = ""   # JSON string of headers actually sent
+    request_body: str = ""      # body actually sent
     is_vulnerable: bool = False
     confidence: str = "low"  # low, medium, high
     details: str = ""

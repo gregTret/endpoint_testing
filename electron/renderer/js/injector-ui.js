@@ -3,7 +3,7 @@
  */
 window.InjectorUI = (() => {
     const API = 'http://127.0.0.1:8000/api';
-    let scanBtn, resultsEl;
+    let scanBtn, pauseBtn, stopBtn, resultsEl;
     let urlEl, methodEl, typeEl, paramsEl, headersEl, bodyEl;
     let scanPollTimer = null;
     let currentScanId = null;
@@ -18,11 +18,16 @@ window.InjectorUI = (() => {
         headersEl  = document.getElementById('inject-headers');
         bodyEl     = document.getElementById('inject-body');
         scanBtn    = document.getElementById('btn-start-scan');
+        pauseBtn   = document.getElementById('btn-pause-scan');
+        stopBtn    = document.getElementById('btn-stop-scan');
         resultsEl  = document.getElementById('scan-results');
         keyPickerGroup = document.getElementById('key-picker-group');
         keyPickerEl    = document.getElementById('key-picker');
 
         scanBtn.addEventListener('click', startScan);
+        pauseBtn.addEventListener('click', togglePause);
+        stopBtn.addEventListener('click', stopScan);
+        document.getElementById('btn-send-single').addEventListener('click', sendSingle);
 
         // Refresh key picker whenever params, headers, or body change
         paramsEl.addEventListener('input', refreshKeyPicker);
@@ -32,6 +37,62 @@ window.InjectorUI = (() => {
         // Refresh key picker when injection-point checkboxes toggle
         document.querySelectorAll('#injection-points input[type="checkbox"]')
             .forEach(cb => cb.addEventListener('change', refreshKeyPicker));
+
+        // Load saved scan history for this workspace
+        loadHistory();
+    }
+
+    async function loadHistory() {
+        try {
+            const res = await fetch(`${API}/scan/history`);
+            const data = await res.json();
+            if (data.length) {
+                lastResults = data;
+                activeFilter = 'all';
+                renderResults(lastResults);
+            }
+        } catch (_) {}
+    }
+
+    /** Send the request exactly as shown in the form — no injection */
+    async function sendSingle() {
+        let headers = {};
+        try { headers = headersEl.value ? JSON.parse(headersEl.value) : {}; } catch (_) {}
+
+        const payload = {
+            url: urlEl.value,
+            method: methodEl.value,
+            headers,
+            body: bodyEl.value,
+        };
+        if (!payload.url) { alert('Enter a target URL'); return; }
+
+        resultsEl.innerHTML = '<p class="placeholder-text">Sending...</p>';
+        try {
+            const res = await fetch(`${API}/send`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            const data = await res.json();
+            resultsEl.innerHTML = `
+                <div class="scan-entry">
+                    <div class="scan-header">
+                        <span class="scan-badge">${data.status_code}</span>
+                        <span class="scan-payload">${esc(data.request_method || payload.method)} ${esc(payload.url)}</span>
+                    </div>
+                    <div class="scan-detail-row"><strong>Request Headers Sent:</strong></div>
+                    <pre class="scan-response-body">${esc(JSON.stringify(data.request_headers || {}, null, 2))}</pre>
+                    <div class="scan-detail-row"><strong>Request Body Sent:</strong></div>
+                    <pre class="scan-response-body">${esc(data.request_body || '(empty)')}</pre>
+                    <div class="scan-detail-row"><strong>Response Headers:</strong></div>
+                    <pre class="scan-response-body">${esc(JSON.stringify(data.headers || {}, null, 2))}</pre>
+                    <div class="scan-detail-row"><strong>Response Body:</strong></div>
+                    <pre class="scan-response-body">${esc(data.body || '(empty)')}</pre>
+                </div>`;
+        } catch (e) {
+            resultsEl.innerHTML = `<p class="placeholder-text" style="color:var(--danger)">Error: ${e.message}</p>`;
+        }
     }
 
     /** Populate the form from a log entry (called when user wants to scan a logged request) */
@@ -89,6 +150,9 @@ window.InjectorUI = (() => {
 
         scanBtn.disabled = true;
         scanBtn.textContent = 'Scanning...';
+        pauseBtn.classList.remove('hidden');
+        stopBtn.classList.remove('hidden');
+        pauseBtn.textContent = 'Pause';
         resultsEl.innerHTML = '<p class="placeholder-text">Scan in progress...</p>';
 
         try {
@@ -122,9 +186,15 @@ window.InjectorUI = (() => {
                 if (status.scan_id !== pollingScanId) return;
 
                 // Update progress text
+                const paused = status.running && status.control === 'pause';
                 if (status.running) {
-                    scanBtn.textContent = `Scanning... (${status.completed}/${status.total})`;
+                    const prefix = paused ? 'Paused' : 'Scanning...';
+                    scanBtn.textContent = `${prefix} (${status.completed}/${status.total})`;
                 }
+
+                // Skip re-rendering while paused — no new results, and
+                // rebuilding the DOM closes any expanded detail panels
+                if (paused) return;
 
                 // Fetch results scoped to this scan
                 const res = await fetch(`${API}/scan/results?session_id=${pollingScanId}&limit=500`);
@@ -137,6 +207,8 @@ window.InjectorUI = (() => {
                     scanPollTimer = null;
                     scanBtn.disabled = false;
                     scanBtn.textContent = 'Launch Scan';
+                    pauseBtn.classList.add('hidden');
+                    stopBtn.classList.add('hidden');
 
                     if (status.error) {
                         resultsEl.innerHTML += `<p class="placeholder-text" style="color:var(--danger);padding:8px 10px">Scan error: ${esc(status.error)}</p>`;
@@ -146,8 +218,23 @@ window.InjectorUI = (() => {
         }, 2000);
     }
 
+    async function togglePause() {
+        try {
+            const res = await fetch(`${API}/scan/pause`, { method: 'POST' });
+            const data = await res.json();
+            pauseBtn.textContent = data.signal === 'pause' ? 'Resume' : 'Pause';
+        } catch (_) {}
+    }
+
+    async function stopScan() {
+        try {
+            await fetch(`${API}/scan/stop`, { method: 'POST' });
+        } catch (_) {}
+    }
+
     let lastResults = [];
     let activeFilter = 'all';
+    const expandedSet = new Set(); // track expanded result indices across re-renders
 
     function renderResults(results) {
         if (results !== lastResults) {
@@ -175,10 +262,12 @@ window.InjectorUI = (() => {
                        : activeFilter === 'safe' ? safe
                        : lastResults;
 
-        const rows = filtered.map(r => {
+        const rows = filtered.map((r, i) => {
             const cls = r.is_vulnerable ? 'scan-vuln' : 'scan-safe';
             const confCls = `confidence-${r.confidence}`;
-            return `<div class="scan-entry ${cls}">
+            const key = r.id || `${r.payload}_${r.original_param}_${i}`;
+            const isOpen = expandedSet.has(key);
+            return `<div class="scan-entry ${cls}" data-key="${esc(String(key))}">
                 <div class="scan-header">
                     <span class="scan-payload" title="${esc(r.payload)}">${esc(r.payload)}</span>
                     <span class="scan-badge">[${esc(r.injection_point)}] ${esc(r.original_param)}</span>
@@ -187,12 +276,16 @@ window.InjectorUI = (() => {
                     <span class="scan-confidence ${confCls}">${r.is_vulnerable ? r.confidence : 'safe'}</span>
                 </div>
                 <div class="scan-details">${esc(r.details)}</div>
-                <div class="scan-response-toggle">▸ Show Details</div>
-                <div class="scan-response hidden">
+                <div class="scan-response-toggle">${isOpen ? '▾ Hide Details' : '▸ Show Details'}</div>
+                <div class="scan-response ${isOpen ? '' : 'hidden'}">
                     <div class="scan-detail-row"><strong>URL:</strong> ${esc(r.target_url)}</div>
                     <div class="scan-detail-row"><strong>Point:</strong> [${esc(r.injection_point)}] ${esc(r.original_param)}</div>
                     <div class="scan-detail-row"><strong>Payload:</strong> ${esc(r.payload)}</div>
                     <div class="scan-detail-row"><strong>Status:</strong> ${r.response_code} &nbsp; <strong>Time:</strong> ${r.response_time_ms}ms</div>
+                    <div class="scan-detail-row"><strong>Request Headers:</strong></div>
+                    <pre class="scan-response-body">${esc(r.request_headers || '(none)')}</pre>
+                    <div class="scan-detail-row"><strong>Request Body:</strong></div>
+                    <pre class="scan-response-body">${esc(r.request_body || '(empty)')}</pre>
                     <div class="scan-detail-row"><strong>Response Body:</strong></div>
                     <pre class="scan-response-body">${esc(r.response_body || '(empty)')}</pre>
                 </div>
@@ -209,13 +302,16 @@ window.InjectorUI = (() => {
             });
         });
 
-        // Expand/collapse details
+        // Expand/collapse details — persist state across re-renders
         resultsEl.querySelectorAll('.scan-response-toggle').forEach(toggle => {
             toggle.addEventListener('click', () => {
+                const entry = toggle.closest('.scan-entry');
+                const key = entry.dataset.key;
                 const detail = toggle.nextElementSibling;
                 const open = !detail.classList.contains('hidden');
                 detail.classList.toggle('hidden');
                 toggle.textContent = open ? '▸ Show Details' : '▾ Hide Details';
+                if (open) { expandedSet.delete(key); } else { expandedSet.add(key); }
             });
         });
     }
@@ -277,10 +373,26 @@ window.InjectorUI = (() => {
 
         keyPickerGroup.style.display = '';
         const isFirstRender = prev.size === 0;
+
+        // Auth-related keys that should default to UNCHECKED to avoid
+        // accidentally injecting into authentication tokens
+        const AUTH_KEYS = new Set([
+            'jwt', 'token', 'idtoken', 'id_token', 'access_token',
+            'accesstoken', 'refresh_token', 'refreshtoken', 'auth',
+            'authorization', 'auth_token', 'password', 'secret',
+            'api_key', 'apikey', 'session', 'session_token', 'csrf',
+            'csrftoken', 'csrf_token', 'x-csrf-token',
+        ]);
+
         keyPickerEl.innerHTML = keys.map(({ source, key }) => {
             const tag = source === 'param' ? 'P' : source === 'header' ? 'H' : 'B';
             const id = source + ':' + key;
-            const checked = isFirstRender || prev.has(id) ? 'checked' : '';
+            // On first render, auto-uncheck auth keys; otherwise preserve previous state
+            const leafKey = key.includes('.') ? key.split('.').pop() : key;
+            const isAuth = AUTH_KEYS.has(leafKey.toLowerCase());
+            const checked = isFirstRender
+                ? (isAuth ? '' : 'checked')
+                : (prev.has(id) ? 'checked' : '');
             return `<label><input type="checkbox" data-key="${esc(key)}" data-source="${source}" ${checked}> [${tag}] ${esc(key)}</label>`;
         }).join(' ');
     }
@@ -302,5 +414,5 @@ window.InjectorUI = (() => {
         return d.innerHTML;
     }
 
-    return { init, loadFromLog };
+    return { init, loadFromLog, loadHistory };
 })();

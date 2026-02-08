@@ -1,6 +1,7 @@
-const { app, BrowserWindow, BrowserView, ipcMain } = require('electron');
+const { app, BrowserWindow, BrowserView, ipcMain, Menu } = require('electron');
 const path = require('path');
 const { spawn, execSync } = require('child_process');
+const http = require('http');
 
 // ── Configuration ──────────────────────────────────────────────────
 const PROXY_HOST = '127.0.0.1';
@@ -70,11 +71,32 @@ function createWindow() {
 
     mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
-    // Embedded browser — routes through mitmproxy
+    mainWindow.on('resize', updateBounds);
+    mainWindow.on('maximize', () => setTimeout(updateBounds, 80));
+    mainWindow.on('unmaximize', () => setTimeout(updateBounds, 80));
+}
+
+/**
+ * Create (or recreate) the BrowserView with a session partition
+ * scoped to the given workspace ID.  Cookies, localStorage, cache
+ * are all persisted separately per workspace.
+ */
+function createBrowserView(workspaceId) {
+    // Detach + destroy the previous view if any
+    if (browserView) {
+        mainWindow.setBrowserView(null);
+        browserView.webContents.destroy();
+        browserView = null;
+    }
+
+    const partition = `persist:ws_${workspaceId}`;
     browserView = new BrowserView({
-        webPreferences: { contextIsolation: true, nodeIntegration: false },
+        webPreferences: {
+            contextIsolation: true,
+            nodeIntegration: false,
+            partition,
+        },
     });
-    mainWindow.setBrowserView(browserView);
 
     browserView.webContents.session.setProxy({
         proxyRules: `http=${PROXY_HOST}:${PROXY_PORT};https=${PROXY_HOST}:${PROXY_PORT}`,
@@ -82,11 +104,6 @@ function createWindow() {
 
     // Trust mitmproxy's TLS certificates
     browserView.webContents.session.setCertificateVerifyProc((_req, cb) => cb(0));
-
-    updateBounds();
-    mainWindow.on('resize', updateBounds);
-    mainWindow.on('maximize', () => setTimeout(updateBounds, 80));
-    mainWindow.on('unmaximize', () => setTimeout(updateBounds, 80));
 
     // Forward URL changes to the renderer
     browserView.webContents.on('did-navigate', (_e, url) => {
@@ -96,7 +113,118 @@ function createWindow() {
         mainWindow.webContents.send('url-changed', url);
     });
 
+    // Right-click context menu with credential auto-fill
+    browserView.webContents.on('context-menu', (e, params) => {
+        const pageUrl = browserView.webContents.getURL();
+        let host = '';
+        try { host = new URL(pageUrl).host; } catch (_) {}
+
+        const baseMenu = [
+            { label: 'Copy', role: 'copy', enabled: params.selectionText.length > 0 },
+            { label: 'Paste', role: 'paste', enabled: params.isEditable },
+            { type: 'separator' },
+        ];
+
+        // Fetch credentials for this site and build the menu
+        fetchCredentials(host).then(creds => {
+            const credItems = [];
+            if (creds.length > 0) {
+                credItems.push({ label: 'Auto-fill Credentials', enabled: false });
+                for (const cred of creds.slice(0, 10)) {
+                    const label = cred.username
+                        ? `${cred.auth_type}: ${cred.username} (${cred.site})`
+                        : `${cred.auth_type}: ${cred.site}`;
+                    credItems.push({
+                        label,
+                        click: () => autoFillCredential(cred),
+                    });
+                }
+            } else {
+                credItems.push({ label: 'No credentials for this site', enabled: false });
+            }
+
+            const menu = Menu.buildFromTemplate([...baseMenu, ...credItems]);
+            menu.popup({ window: mainWindow });
+        }).catch(() => {
+            const menu = Menu.buildFromTemplate([...baseMenu, { label: 'Credentials unavailable', enabled: false }]);
+            menu.popup({ window: mainWindow });
+        });
+    });
+
+    mainWindow.setBrowserView(browserView);
+    updateBounds();
     browserView.webContents.loadURL('https://example.com');
+}
+
+/**
+ * Fetch credentials from the backend API for a given host.
+ */
+function fetchCredentials(host) {
+    const qs = host ? `?site=${encodeURIComponent(host)}` : '';
+    return new Promise((resolve, reject) => {
+        http.get(`http://127.0.0.1:${BACKEND_PORT}/api/credentials${qs}`, (res) => {
+            let data = '';
+            res.on('data', (chunk) => { data += chunk; });
+            res.on('end', () => {
+                try { resolve(JSON.parse(data)); } catch (_) { resolve([]); }
+            });
+        }).on('error', reject);
+    });
+}
+
+/**
+ * Inject credential values into form fields on the current page.
+ */
+function autoFillCredential(cred) {
+    if (!browserView) return;
+
+    const js = `
+    (function() {
+        // Find password and username fields
+        const pwFields = document.querySelectorAll('input[type="password"]');
+        const userFields = document.querySelectorAll(
+            'input[type="email"], input[type="text"][name*="user"], input[type="text"][name*="email"], ' +
+            'input[name*="login"], input[autocomplete="username"], input[autocomplete="email"]'
+        );
+
+        // If no specific user fields found, try the input right before the password field
+        let userField = userFields[0] || null;
+        if (!userField && pwFields.length > 0) {
+            let prev = pwFields[0].previousElementSibling;
+            while (prev) {
+                if (prev.tagName === 'INPUT' && prev.type !== 'hidden') { userField = prev; break; }
+                prev = prev.previousElementSibling;
+            }
+        }
+
+        const username = ${JSON.stringify(cred.username || '')};
+        const password = ${JSON.stringify(cred.password || '')};
+        const token    = ${JSON.stringify(cred.token || '')};
+
+        function fill(el, value) {
+            if (!el || !value) return;
+            el.focus();
+            el.value = value;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+
+        if (userField) fill(userField, username);
+        pwFields.forEach(f => fill(f, password));
+
+        // For token/cookie auth — set via document.cookie or just fill any visible token input
+        if (token && !password) {
+            const tokenFields = document.querySelectorAll(
+                'input[name*="token"], input[name*="key"], input[name*="api"], input[type="text"]'
+            );
+            if (tokenFields.length) fill(tokenFields[0], token);
+        }
+
+        return 'filled';
+    })();
+    `;
+
+    browserView.webContents.executeJavaScript(js).catch(() => {});
 }
 
 function updateBounds() {
@@ -133,6 +261,16 @@ ipcMain.on('refresh', () => {
 
 ipcMain.handle('get-current-url', () => {
     return browserView ? browserView.webContents.getURL() : '';
+});
+
+ipcMain.on('show-browser', (_e, workspaceId) => {
+    if (!mainWindow) return;
+    createBrowserView(workspaceId || 'default');
+});
+
+ipcMain.on('hide-browser', () => {
+    if (!mainWindow) return;
+    mainWindow.setBrowserView(null);
 });
 
 // ── App lifecycle ──────────────────────────────────────────────────

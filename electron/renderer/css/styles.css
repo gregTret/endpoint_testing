@@ -429,6 +429,13 @@ html, body {
 }
 .btn-primary:hover { background: var(--accent); }
 
+.scan-controls {
+    display: flex;
+    gap: 6px;
+}
+.scan-controls .btn-primary { flex: 1; }
+.scan-controls .btn-small { min-width: 60px; height: 34px; }
+
 /* ── Scan Results ─────────────────────────────────────────────────── */
 #scan-results { flex: 1; padding: 4px 0; }
 
@@ -694,6 +701,132 @@ html, body {
 }
 .ctx-menu-item--danger { color: var(--danger); }
 .ctx-menu-item--danger:hover { background: var(--danger); color: #fff; }
+
+/* ── Workspace Launcher ───────────────────────────────────────────── */
+
+#workspace-launcher {
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.launcher-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 32px;
+    width: 480px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.launcher-title {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0 0 4px;
+}
+
+.launcher-subtitle {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin: 0 0 16px;
+}
+
+.launcher-create {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 16px;
+}
+.launcher-create input {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 6px 10px;
+    color: var(--text);
+    font-size: 13px;
+}
+.launcher-create button {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius);
+    padding: 6px 16px;
+    cursor: pointer;
+    font-size: 13px;
+}
+.launcher-create button:hover { background: var(--accent-dim); }
+
+.launcher-list {
+    overflow-y: auto;
+    max-height: 50vh;
+}
+
+.ws-entry {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    transition: background .1s;
+}
+.ws-entry:hover { background: var(--surface2); }
+
+.ws-entry-main {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.ws-name {
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.ws-date {
+    color: var(--text-dim);
+    font-size: 11px;
+}
+
+.ws-entry-actions {
+    display: flex;
+    gap: 6px;
+}
+.ws-entry-actions button {
+    min-width: 64px;
+    height: 28px;
+    padding: 0 12px;
+    font-size: 12px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    border: 1px solid var(--border);
+    white-space: nowrap;
+}
+.ws-entry-actions .ws-open {
+    background: var(--accent-dim);
+    color: #fff;
+    border-color: var(--accent-dim);
+}
+.ws-entry-actions .ws-open:hover { background: var(--accent); }
+.ws-entry-actions .ws-delete {
+    background: var(--surface2);
+    color: var(--danger);
+}
+.ws-entry-actions .ws-delete:hover { background: var(--danger); color: #fff; }
+
+.ws-badge {
+    font-size: 11px;
+    color: var(--accent);
+    padding: 0 8px;
+    white-space: nowrap;
+}
 
 /* ── Utility ──────────────────────────────────────────────────────── */
 .hidden { display: none !important; }

@@ -12,8 +12,23 @@
 </head>
 <body>
 
+<!-- ── Workspace Launcher Overlay ─────────────────────────────── -->
+<div id="workspace-launcher">
+    <div class="launcher-card">
+        <h1 class="launcher-title">Endpoint Security Tool</h1>
+        <p class="launcher-subtitle">Select or create a workspace</p>
+        <div class="launcher-create">
+            <input type="text" id="ws-new-name" placeholder="New workspace name..." spellcheck="false">
+            <button id="btn-ws-create">Create</button>
+        </div>
+        <div id="ws-list" class="launcher-list">
+            <p class="placeholder-text">Loading workspaces...</p>
+        </div>
+    </div>
+</div>
+
 <!-- ── Top Navigation Bar ─────────────────────────────────────── -->
-<nav id="nav-bar">
+<nav id="nav-bar" class="hidden">
     <div class="nav-controls">
         <button id="btn-back" title="Back">&#9664;</button>
         <button id="btn-forward" title="Forward">&#9654;</button>
@@ -24,12 +39,14 @@
         <button id="btn-go">Go</button>
     </div>
     <div class="nav-status">
+        <button id="btn-switch-ws" class="btn-small" title="Switch workspace">Switch</button>
+        <span id="ws-active-name" class="ws-badge"></span>
         <span id="connection-status" class="status-dot disconnected" title="Backend connection"></span>
     </div>
 </nav>
 
 <!-- ── Tool Panel (left side) ─────────────────────────────────── -->
-<div id="tool-panel">
+<div id="tool-panel" class="hidden">
 
     <!-- Tab bar -->
     <div id="tab-bar">
@@ -118,7 +135,12 @@
                     <label>Target Keys <span class="hint">(uncheck keys you don't want to inject into)</span></label>
                     <div id="key-picker" class="checkbox-group"></div>
                 </div>
-                <button id="btn-start-scan" class="btn-primary">Launch Scan</button>
+                <div class="scan-controls">
+                    <button id="btn-send-single" class="btn-small">Send Request</button>
+                    <button id="btn-start-scan" class="btn-primary">Launch Scan</button>
+                    <button id="btn-pause-scan" class="btn-small hidden">Pause</button>
+                    <button id="btn-stop-scan" class="btn-small danger hidden">Stop</button>
+                </div>
             </div>
             <div id="scan-results" class="scrollable"></div>
         </div>
@@ -186,6 +208,7 @@
     </div>
 </div>
 
+<script src="js/workspace.js"></script>
 <script src="js/log-viewer.js"></script>
 <script src="js/site-map.js"></script>
 <script src="js/injector-ui.js"></script>

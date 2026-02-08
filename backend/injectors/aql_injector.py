@@ -94,6 +94,18 @@ class AQLInjector(BaseInjector):
                 is_vulnerable = True
                 confidence = "high"
 
+        # Helper: server properly rejected the input (validation error, not a vuln).
+        # Only suppresses ambiguous checks — NEVER overrides error/time findings.
+        is_rejection = (400 <= test_status < 500)
+
+        if is_rejection and not is_vulnerable:
+            return VulnerabilityReport(
+                is_vulnerable=False,
+                confidence="low",
+                details="Server rejected input (validation — not a vuln)",
+                evidence=evidence,
+            )
+
         # 3. Boolean / tautology
         if "OR 1==1" in payload or "OR true" in payload:
             if test_status == 200 and len(body) > len(baseline_body) + 20:

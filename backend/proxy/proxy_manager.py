@@ -19,10 +19,12 @@ class ProxyManager:
         self,
         listen_host: str = PROXY_HOST,
         listen_port: int = PROXY_PORT,
+        workspace_getter=None,
     ) -> None:
         self.listen_host = listen_host
         self.listen_port = listen_port
         self.log_queue: queue.Queue = queue.Queue(maxsize=PROXY_QUEUE_MAX)
+        self._workspace_getter = workspace_getter or (lambda: "default")
         self.master: DumpMaster | None = None
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -55,7 +57,7 @@ class ProxyManager:
             ssl_insecure=True,
         )
         self.master = DumpMaster(opts, with_dumper=False)
-        addon = InterceptAddon(self.log_queue)
+        addon = InterceptAddon(self.log_queue, workspace_getter=self._workspace_getter)
         self.master.addons.add(addon)
 
         try:

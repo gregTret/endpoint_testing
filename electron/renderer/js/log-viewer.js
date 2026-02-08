@@ -52,7 +52,7 @@ window.LogViewer = (() => {
                 <span class="log-method method-${e.method}">${e.method}</span>
                 <span class="log-status ${statusClass}">${e.status_code || '—'}</span>
                 <span class="log-url" title="${esc(e.url)}">${esc(e.path || e.url)}</span>
-                <span class="log-time">${e.duration_ms ? e.duration_ms.toFixed(0) + 'ms' : ''}</span>
+                <span class="log-time">${fmtTime(e.timestamp)}${e.duration_ms ? ' · ' + e.duration_ms.toFixed(0) + 'ms' : ''}</span>
             </div>`;
         }).join('');
 
@@ -121,6 +121,14 @@ window.LogViewer = (() => {
     }
 
     // ── Helpers ────────────────────────
+    function fmtTime(ts) {
+        if (!ts) return '';
+        try {
+            const d = new Date(ts);
+            return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        } catch (_) { return ''; }
+    }
+
     function esc(s) {
         const d = document.createElement('div');
         d.textContent = s || '';
@@ -134,5 +142,13 @@ window.LogViewer = (() => {
             .join('\n');
     }
 
-    return { init, addEntry, getSelected };
+    /** Reset all logs (used on workspace switch) */
+    function clear() {
+        logs = [];
+        selectedId = null;
+        renderList();
+        closeDetail();
+    }
+
+    return { init, addEntry, getSelected, clear };
 })();

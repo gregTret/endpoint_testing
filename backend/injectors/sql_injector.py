@@ -119,35 +119,44 @@ class SQLInjector(BaseInjector):
             or body_stripped == "[]"
         )
 
+        # Helper: server returned a 4xx — it properly rejected the input.
+        # Only suppresses ambiguous behavioural checks below; error-pattern
+        # and time-based findings (already checked above) are never overridden.
+        # We rely on HTTP status only — body keywords like "invalid" are too
+        # broad and could mask real errors on other servers.
+        is_rejection = (400 <= test_status < 500)
+
         # 3. Boolean-blind — only flag the FALSE case if the TRUE case
         #    matched baseline.  A "false" payload returning null/empty
         #    when baseline returns data is normal (bad input → no result).
         if "AND 1=2" in payload or "'a'='b" in payload:
-            # The false payload should return LESS data than baseline
-            # but this alone is not conclusive — we note it for pairing
-            if not is_empty_response and body != baseline_body:
+            if is_rejection:
+                evidence.append("Server rejected input (validation — not a vuln)")
+            elif not is_empty_response and body != baseline_body:
                 evidence.append("Boolean false returned non-empty different response")
                 is_vulnerable = True
                 confidence = "medium"
             elif is_empty_response and not baseline_body.strip().strip('"') in ("null", "", "{}", "[]"):
-                # Empty response when baseline had data — expected for bad input, NOT a vuln
                 evidence.append("Boolean false returned empty (likely normal — not conclusive)")
 
         if "AND 1=1" in payload or "'a'='a" in payload:
-            # The true tautology should behave identically to baseline
-            if body == baseline_body and test_status == baseline_status:
+            if is_rejection:
+                evidence.append("Server rejected input (validation — not a vuln)")
+            elif body == baseline_body and test_status == baseline_status:
                 evidence.append("Boolean true matches baseline — SQL may be evaluated")
                 is_vulnerable = True
                 confidence = "medium"
 
         # 4. UNION — extra content returned (not just null/empty)
         if "UNION" in payload.upper():
-            if test_status == 200 and not is_empty_response and len(body) > len(baseline_body) + 50:
+            if is_rejection:
+                evidence.append("Server rejected input (validation — not a vuln)")
+            elif test_status == 200 and not is_empty_response and len(body) > len(baseline_body) + 50:
                 evidence.append("UNION query returned additional content")
                 is_vulnerable = True
                 confidence = "medium"
 
-        # 5. Server error triggered
+        # 5. Server error triggered (500 only — 4xx is validation)
         if test_status == 500 and baseline_status != 500:
             evidence.append(f"500 error triggered (baseline was {baseline_status})")
             if not is_vulnerable:

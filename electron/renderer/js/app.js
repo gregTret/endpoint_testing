@@ -1,7 +1,8 @@
 /**
  * App — main orchestrator
  *
- * - Connects WebSocket to FastAPI backend
+ * - Shows workspace launcher on startup
+ * - After workspace selected: connects WebSocket, inits sub-modules
  * - Dispatches events to LogViewer / SiteMap / InjectorUI
  * - Handles tab switching + URL bar navigation
  */
@@ -10,13 +11,39 @@
     const API    = 'http://127.0.0.1:8000/api';
     let ws = null;
     let statusDot;
+    let mainInitialised = false;
 
     // ── Bootstrap ──────────────────────────────────────────────────
 
     document.addEventListener('DOMContentLoaded', () => {
         statusDot = document.getElementById('connection-status');
 
-        // Initialise sub-modules
+        // Show workspace launcher first — main UI stays hidden
+        Workspace.init(onWorkspaceSelected);
+
+        // "Switch Workspace" button
+        document.getElementById('btn-switch-ws').addEventListener('click', () => {
+            Workspace.show();
+            // Close WS so we stop streaming old workspace data
+            if (ws) { ws.onclose = null; ws.close(); ws = null; }
+        });
+    });
+
+    /** Called by Workspace module after a workspace is selected */
+    function onWorkspaceSelected(workspaceId, workspaceName) {
+        if (!mainInitialised) {
+            initMainUI();
+            mainInitialised = true;
+        }
+
+        // Reconnect WS + reload data for the new workspace
+        if (ws) { ws.onclose = null; ws.close(); ws = null; }
+        connectWS();
+        reloadWorkspaceData();
+    }
+
+    function initMainUI() {
+        // Initialise sub-modules (once)
         LogViewer.init();
         SiteMap.init();
         Credentials.init();
@@ -52,13 +79,17 @@
                 switchTab('injector');
             }
         });
+    }
 
-        // Connect WebSocket
-        connectWS();
-
-        // Load existing logs on startup
+    /** Clear current UI data and reload from the active workspace */
+    function reloadWorkspaceData() {
+        // Clear log viewer and site map
+        if (LogViewer.clear) LogViewer.clear();
+        if (SiteMap.clear) SiteMap.clear();
         loadExistingLogs();
-    });
+        if (Credentials.loadCreds) Credentials.loadCreds();
+        if (InjectorUI.loadHistory) InjectorUI.loadHistory();
+    }
 
     // ── WebSocket ──────────────────────────────────────────────────
 

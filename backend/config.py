@@ -18,6 +18,7 @@ DB_PATH = Path(os.getenv("DB_PATH", str(Path(__file__).parent / "storage" / "ses
 # ── Proxy / Interception ──────────────────────────────────────────
 PROXY_QUEUE_MAX = 10_000
 LOG_BODY_CAP = 50_000          # max chars stored per request/response body
+LOG_OPTIONS_REQUESTS = False   # set True to capture OPTIONS (CORS preflight) requests
 
 # ── Polling ────────────────────────────────────────────────────────
 QUEUE_POLL_INTERVAL = 0.05     # seconds between proxy-queue drain cycles
