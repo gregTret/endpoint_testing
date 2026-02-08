@@ -48,14 +48,8 @@
 <!-- ── Tool Panel (left side) ─────────────────────────────────── -->
 <div id="tool-panel" class="hidden">
 
-    <!-- Tab bar -->
-    <div id="tab-bar">
-        <button class="tab active" data-tab="logs">Logs</button>
-        <button class="tab" data-tab="sitemap">Site Map</button>
-        <button class="tab" data-tab="injector">Injector</button>
-        <button class="tab" data-tab="repeater">Repeater</button>
-        <button class="tab" data-tab="settings">Settings</button>
-    </div>
+    <!-- Tab bar (rendered dynamically by app.js) -->
+    <div id="tab-bar"></div>
 
     <!-- Tab content -->
     <div id="tab-content">
@@ -109,6 +103,7 @@
                             <option value="aql">AQL</option>
                             <option value="xss">XSS</option>
                             <option value="mongo">MongoDB</option>
+                            <option value="jwt">JWT</option>
                         </select>
                     </div>
                 </div>
@@ -133,8 +128,8 @@
                     </div>
                 </div>
                 <div class="form-group" id="key-picker-group" style="display:none">
-                    <label>Target Keys <span class="hint">(uncheck keys you don't want to inject into)</span></label>
-                    <div id="key-picker" class="checkbox-group"></div>
+                    <label>Target Keys <span class="hint">(uncheck to exclude from injection)</span></label>
+                    <div id="key-picker" class="key-picker-table"></div>
                 </div>
                 <div class="scan-controls">
                     <button id="btn-send-single" class="btn-small">Send Request</button>
@@ -142,6 +137,10 @@
                     <button id="btn-pause-scan" class="btn-small hidden">Pause</button>
                     <button id="btn-stop-scan" class="btn-small danger hidden">Stop</button>
                 </div>
+            </div>
+            <div id="scan-results-toolbar" class="pane-controls hidden">
+                <input type="text" id="scan-text-filter" placeholder="Filter results...">
+                <button id="btn-analyze-filtered" class="btn-small">Analyze Filtered</button>
             </div>
             <div id="scan-results" class="scrollable"></div>
         </div>
@@ -181,8 +180,31 @@
         </div>
 
         <!-- Credentials -->
+        <!-- Analytics -->
+        <div class="tab-pane" data-tab="analytics">
+            <div id="analytics-filter-bar" class="pane-controls hidden">
+                <span id="analytics-filter-label" class="status-label" style="flex:1"></span>
+                <button id="btn-analytics-full" class="btn-small">Show Full Analysis</button>
+            </div>
+            <div id="analytics-body-content" class="scrollable"></div>
+        </div>
+
         <div class="tab-pane" data-tab="settings">
             <div class="settings-scroll scrollable">
+
+                <!-- Tab Configuration -->
+                <div class="settings-section">
+                    <div class="settings-section-title">Tabs</div>
+                    <p style="font-size:11px;color:var(--text-dim);margin-bottom:8px">Drag to reorder. Uncheck to hide. Settings tab is always visible.</p>
+                    <div id="tab-config-list"></div>
+                    <button id="btn-save-tab-config" class="btn-primary" style="margin-top:8px;width:auto;padding:0 16px">Save Tab Layout</button>
+                </div>
+
+                <!-- Export -->
+                <div class="settings-section">
+                    <div class="settings-section-title">Export</div>
+                    <button id="btn-open-export" class="btn-primary" style="width:auto;padding:0 16px">Export Data...</button>
+                </div>
 
                 <!-- Data Management -->
                 <div class="settings-section">
@@ -263,12 +285,75 @@
 <!-- Drag handle to resize tool panel / browser split -->
 <div id="panel-resize-handle"></div>
 
+
+<!-- ── Export Modal ────────────────────────────────────────────── -->
+<div id="export-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+        <div class="modal-header">
+            <h3>Export Data</h3>
+            <button id="btn-export-close" class="btn-small">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div id="export-site-filter" class="form-group hidden" style="background:var(--bg);padding:8px 10px;border-radius:4px;margin-bottom:10px">
+                <label style="font-size:11px;color:var(--text-dim);margin:0">Filtered to site: <strong id="export-site-label"></strong></label>
+                <button id="btn-export-clear-filter" class="btn-small" style="margin-left:8px;font-size:10px">Clear filter</button>
+            </div>
+            <div class="form-group">
+                <label>What to export</label>
+                <div class="checkbox-group" style="flex-direction:column;gap:6px">
+                    <label><input type="checkbox" value="logs" checked> Request Logs</label>
+                    <label><input type="checkbox" value="scans" checked> Scan Results</label>
+                    <label><input type="checkbox" value="sitemap"> Site Map URLs</label>
+                    <label><input type="checkbox" value="credentials"> Credentials</label>
+                    <label><input type="checkbox" value="repeater"> Repeater History</label>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Format</label>
+                <select id="export-format">
+                    <option value="json">JSON</option>
+                    <option value="postman">Postman Collection (endpoints only)</option>
+                    <option value="csv">CSV (logs &amp; scans only)</option>
+                </select>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button id="btn-export-run" class="btn-primary" style="width:auto;padding:0 20px">Export</button>
+        </div>
+    </div>
+</div>
+
+<!-- ── Endpoint Export Modal (from site map) ──────────────────── -->
+<div id="endpoint-export-modal" class="modal-overlay hidden">
+    <div class="modal-card" style="width:320px">
+        <div class="modal-header">
+            <h3>Export Endpoints</h3>
+            <button id="btn-ep-export-close" class="btn-small">&times;</button>
+        </div>
+        <div class="modal-body">
+            <p id="ep-export-site" style="font-size:12px;color:var(--text-dim);margin:0 0 10px"></p>
+            <div class="form-group">
+                <label>Format</label>
+                <select id="ep-export-format">
+                    <option value="postman">Postman Collection</option>
+                    <option value="json">JSON</option>
+                    <option value="csv">CSV</option>
+                </select>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button id="btn-ep-export-run" class="btn-primary" style="width:auto;padding:0 20px">Export</button>
+        </div>
+    </div>
+</div>
+
 <script src="js/workspace.js"></script>
 <script src="js/log-viewer.js"></script>
 <script src="js/site-map.js"></script>
 <script src="js/injector-ui.js"></script>
 <script src="js/repeater.js"></script>
 <script src="js/credentials.js"></script>
+<script src="js/analytics.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

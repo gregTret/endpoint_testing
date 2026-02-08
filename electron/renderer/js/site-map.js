@@ -234,6 +234,11 @@ window.SiteMap = (() => {
             { label: 'Scan with Injector', action: () => { InjectorUI.loadFromLog({ url, method: 'GET', request_headers: {}, request_body: '' }); switchTab('injector'); } },
             { label: 'Add Credentials for Site', action: () => { Credentials.openWithSite(host || new URL(url).host); switchTab('settings'); } },
             { label: 'Start Crawl from Here', action: () => { crawlBtn.disabled = true; stopBtn.disabled = false; statusEl.textContent = 'Starting...'; fetch(`${API}/crawl?url=${encodeURIComponent(url)}&max_depth=5&max_pages=100`, { method: 'POST' }).then(pollCrawlStatus); } },
+            { label: 'Export Known Endpoints', action: () => {
+                let prefix;
+                try { const u = new URL(url); prefix = pathParts.length ? u.host + '/' + pathParts.join('/') : u.host; } catch (_) { prefix = host || url; }
+                _exportEndpoints(prefix);
+            }},
             { label: 'Remove from Site Map', cls: 'ctx-menu-item--danger', action: () => { removeNode(host || new URL(url).host, pathParts); } },
         ];
 
@@ -279,6 +284,124 @@ window.SiteMap = (() => {
             ctxMenu.parentNode.removeChild(ctxMenu);
         }
         ctxMenu = null;
+    }
+
+    function _exportEndpoints(sitePrefix) {
+        const modal  = document.getElementById('endpoint-export-modal');
+        const fmtSel = document.getElementById('ep-export-format');
+        const siteEl = document.getElementById('ep-export-site');
+        const runBtn = document.getElementById('btn-ep-export-run');
+        const closeBtn = document.getElementById('btn-ep-export-close');
+
+        siteEl.textContent = sitePrefix;
+        modal.classList.remove('hidden');
+        window.electronAPI.hideBrowser();
+
+        function close() {
+            modal.classList.add('hidden');
+            const wsId = Workspace.getActiveId();
+            const lastUrl = localStorage.getItem(`ws_lastUrl_${wsId}`) || '';
+            window.electronAPI.showBrowser(wsId, lastUrl);
+            runBtn.removeEventListener('click', run);
+            closeBtn.removeEventListener('click', close);
+        }
+
+        async function run() {
+            const fmt = fmtSel.value;
+            try {
+                const logs = await (await fetch(`${API}/logs?limit=10000`)).json();
+                const endpoints = _dedupeEndpoints(logs, sitePrefix);
+                if (!endpoints.length) { alert('No endpoints found for ' + sitePrefix); return; }
+
+                let blob, filename;
+                const tag = sitePrefix.replace(/[^a-zA-Z0-9.-]/g, '_');
+
+                if (fmt === 'postman') {
+                    const collection = {
+                        info: { name: sitePrefix, schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' },
+                        item: endpoints.map(_toPostmanItem),
+                    };
+                    blob = new Blob([JSON.stringify(collection, null, 2)], { type: 'application/json' });
+                    filename = `${tag}_endpoints.postman_collection.json`;
+                } else if (fmt === 'csv') {
+                    const lines = ['method,url,content_type'];
+                    endpoints.forEach(e => lines.push(`${e.method},"${e.url}",${e.content_type || ''}`));
+                    blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+                    filename = `${tag}_endpoints.csv`;
+                } else {
+                    blob = new Blob([JSON.stringify(endpoints, null, 2)], { type: 'application/json' });
+                    filename = `${tag}_endpoints.json`;
+                }
+
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = filename;
+                a.click();
+                URL.revokeObjectURL(a.href);
+                close();
+            } catch (err) {
+                console.error('Export endpoints failed:', err);
+                alert('Export failed — see console');
+            }
+        }
+
+        runBtn.addEventListener('click', run);
+        closeBtn.addEventListener('click', close);
+        modal.addEventListener('click', (e) => { if (e.target === modal) close(); }, { once: true });
+    }
+
+    function _dedupeEndpoints(logs, sitePrefix) {
+        const seen = {};
+        const results = [];
+        logs.forEach(l => {
+            if (!l.url) return;
+            let u;
+            try { u = new URL(l.url); } catch (_) { return; }
+            const hostPath = u.host + u.pathname;
+            if (u.host !== sitePrefix && !hostPath.startsWith(sitePrefix)) return;
+            const key = `${l.method} ${u.pathname}`;
+            if (seen[key]) return;
+            seen[key] = true;
+            results.push({
+                method: l.method,
+                url: l.url,
+                pathname: u.pathname,
+                hostname: u.hostname,
+                port: u.port || '',
+                protocol: u.protocol.replace(':', ''),
+                query: [...u.searchParams].map(([k, v]) => ({ key: k, value: v })),
+                content_type: l.content_type || '',
+                request_headers: l.request_headers || {},
+                request_body: l.request_body || '',
+            });
+        });
+        return results;
+    }
+
+    function _toPostmanItem(ep) {
+        const DROP = new Set(['host','content-length','transfer-encoding','connection','accept-encoding']);
+        const item = {
+            name: `${ep.method} ${ep.pathname}`,
+            request: {
+                method: ep.method,
+                header: Object.entries(ep.request_headers)
+                    .filter(([k]) => !DROP.has(k.toLowerCase()))
+                    .map(([k, v]) => ({ key: k, value: String(v) })),
+                url: {
+                    raw: ep.url,
+                    protocol: ep.protocol,
+                    host: ep.hostname.split('.'),
+                    port: ep.port,
+                    path: ep.pathname.split('/').filter(Boolean),
+                    query: ep.query,
+                },
+            },
+        };
+        if (ep.request_body) {
+            const raw = typeof ep.request_body === 'string' ? ep.request_body : JSON.stringify(ep.request_body);
+            item.request.body = { mode: 'raw', raw, options: { raw: { language: 'json' } } };
+        }
+        return item;
     }
 
     function switchTab(tabName) {

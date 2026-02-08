@@ -19,6 +19,10 @@ from storage.db import (
     get_sitemap_urls,
     delete_sitemap_url,
     delete_sitemap_urls_by_prefix,
+    save_repeater_entry,
+    get_repeater_history,
+    delete_repeater_history,
+    delete_repeater_entry,
     export_session,
     save_credential,
     get_credentials,
@@ -34,6 +38,7 @@ from injectors.sql_injector import SQLInjector
 from injectors.aql_injector import AQLInjector
 from injectors.xss_injector import XSSInjector
 from injectors.mongo_injector import MongoInjector
+from injectors.jwt_injector import JWTInjector
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -44,6 +49,7 @@ INJECTORS = {
     "aql": AQLInjector,
     "xss": XSSInjector,
     "mongo": MongoInjector,
+    "jwt": JWTInjector,
 }
 
 # Spider reference — set by main.py at startup
@@ -343,6 +349,29 @@ async def sitemap_remove(url: str = "", prefix: str = ""):
         await delete_sitemap_urls_by_prefix(prefix, _active_workspace)
     elif url:
         await delete_sitemap_url(url, _active_workspace)
+    return {"ok": True}
+
+
+# ──────────────────────────── Repeater History ───────────────────────────
+
+
+@router.get("/repeater/history")
+async def repeater_history_list(limit: int = 50):
+    return await get_repeater_history(_active_workspace, limit)
+
+
+@router.post("/repeater/history")
+async def repeater_history_add(entry: dict):
+    row_id = await save_repeater_entry(entry, _active_workspace)
+    return {"ok": True, "id": row_id}
+
+
+@router.delete("/repeater/history")
+async def repeater_history_clear(entry_id: int = 0):
+    if entry_id:
+        await delete_repeater_entry(entry_id)
+    else:
+        await delete_repeater_history(_active_workspace)
     return {"ok": True}
 
 

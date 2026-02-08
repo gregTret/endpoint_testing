@@ -17,12 +17,56 @@ window.Repeater = (() => {
         sendBtn    = document.getElementById('btn-repeater-send');
 
         sendBtn.addEventListener('click', send);
+        loadHistory();
+    }
+
+    /** Load persisted history from backend */
+    function loadHistory() {
+        fetch(`${API}/repeater/history`)
+            .then(r => r.json())
+            .then(rows => {
+                history = rows.map(r => ({
+                    id: r.id,
+                    method: r.method || 'GET',
+                    url: r.url || '',
+                    headers: _parseHeaders(r.headers),
+                    body: r.body || '',
+                    label: `${r.method || 'GET'} ${_shortUrl(r.url || '')}`,
+                }));
+                selectedIdx = history.length ? 0 : null;
+                if (selectedIdx === 0) _loadEntry(history[0]);
+                renderList();
+            })
+            .catch(() => {});
+    }
+
+    /** Persist a single entry to backend */
+    function _persist(entry) {
+        fetch(`${API}/repeater/history`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                method: entry.method,
+                url: entry.url,
+                headers: entry.headers,
+                body: entry.body,
+            }),
+        })
+        .then(r => r.json())
+        .then(data => { if (data.id) entry.id = data.id; })
+        .catch(() => {});
+    }
+
+    /** Delete a single entry from backend */
+    function _unpersist(entry) {
+        if (!entry.id) return;
+        fetch(`${API}/repeater/history?entry_id=${entry.id}`, { method: 'DELETE' }).catch(() => {});
     }
 
     /** Add a request to the repeater history and select it */
     function addRequest(req) {
         const entry = {
-            id: Date.now(),
+            id: null,
             method: req.method || 'GET',
             url: req.url || '',
             headers: req.headers || {},
@@ -32,6 +76,7 @@ window.Repeater = (() => {
         history.unshift(entry);
         if (history.length > 50) history.length = 50;
         selectedIdx = 0;
+        _persist(entry);
         _loadEntry(entry);
         renderList();
         _switchToTab();
@@ -72,6 +117,7 @@ window.Repeater = (() => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 const idx = Number(btn.dataset.idx);
+                _unpersist(history[idx]);
                 history.splice(idx, 1);
                 if (selectedIdx >= history.length) selectedIdx = history.length - 1;
                 if (selectedIdx >= 0) _loadEntry(history[selectedIdx]);
@@ -80,70 +126,64 @@ window.Repeater = (() => {
         });
     }
 
-    async function send() {
+    function send() {
         let headers = {};
-        try { headers = headersEl.value ? JSON.parse(headersEl.value) : {}; } catch (_) {}
+        try { headers = headersEl.value.trim() ? JSON.parse(headersEl.value) : {}; } catch (_) {}
 
-        const payload = {
-            url: urlEl.value,
-            method: methodEl.value,
-            headers,
-            body: bodyEl.value,
+        const url = (urlEl.value || '').trim();
+        const method = methodEl.value || 'GET';
+        const body = bodyEl.value || '';
+
+        if (!url) { alert('Enter a URL'); return; }
+
+        // Always create a new history entry per send
+        const entry = {
+            id: null,
+            method, url, headers, body,
+            label: `${method} ${_shortUrl(url)}`,
         };
-        if (!payload.url) { alert('Enter a URL'); return; }
-
-        // Save into history — update selected entry or create new one
-        if (selectedIdx != null && selectedIdx < history.length) {
-            const h = history[selectedIdx];
-            h.method = payload.method;
-            h.url = payload.url;
-            h.headers = headers;
-            h.body = payload.body;
-            h.label = `${payload.method} ${_shortUrl(payload.url)}`;
-        } else {
-            history.unshift({
-                id: Date.now(),
-                method: payload.method,
-                url: payload.url,
-                headers,
-                body: payload.body,
-                label: `${payload.method} ${_shortUrl(payload.url)}`,
-            });
-            if (history.length > 50) history.length = 50;
-            selectedIdx = 0;
-        }
+        history.unshift(entry);
+        if (history.length > 50) history.length = 50;
+        selectedIdx = 0;
+        _persist(entry);
         renderList();
 
         sendBtn.disabled = true;
         sendBtn.textContent = '...';
         responseEl.innerHTML = '<p class="placeholder-text">Sending...</p>';
 
-        try {
-            const res = await fetch(`${API}/send`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload),
-            });
-            const data = await res.json();
+        const payload = { url, method, headers, body };
+
+        fetch(`${API}/send`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        })
+        .then(r => r.json())
+        .then(data => {
             responseEl.innerHTML = `
                 <div class="repeater-response-block">
                     <div class="scan-header">
-                        <span class="scan-badge">${data.status_code}</span>
-                        <span class="scan-payload">${esc(payload.method)} ${esc(payload.url)}</span>
+                        <span class="scan-badge">${data.status_code || data.error || '?'}</span>
+                        <span class="scan-payload">${esc(method)} ${esc(url)}</span>
                     </div>
                     <div class="scan-detail-row"><strong>Response Headers:</strong></div>
                     <pre class="scan-response-body">${esc(JSON.stringify(data.headers || {}, null, 2))}</pre>
                     <div class="scan-detail-row"><strong>Response Body:</strong></div>
-                    <pre class="scan-response-body">${esc(data.body || '(empty)')}</pre>
+                    <pre class="scan-response-body">${esc(data.body || data.error || '(empty)')}</pre>
                 </div>`;
-        } catch (e) {
+        })
+        .catch(e => {
             responseEl.innerHTML = `<p class="placeholder-text" style="color:var(--danger)">Error: ${e.message}</p>`;
-        }
-        sendBtn.disabled = false;
-        sendBtn.textContent = 'Send';
+        })
+        .finally(() => {
+            sendBtn.disabled = false;
+            sendBtn.textContent = 'Send';
+        });
     }
 
     function clearAll() {
+        fetch(`${API}/repeater/history`, { method: 'DELETE' }).catch(() => {});
         history = [];
         selectedIdx = null;
         renderList();
@@ -165,11 +205,17 @@ window.Repeater = (() => {
         try { return new URL(url).pathname; } catch (_) { return url.slice(0, 40); }
     }
 
+    function _parseHeaders(h) {
+        if (!h) return {};
+        if (typeof h === 'object') return h;
+        try { return JSON.parse(h); } catch (_) { return {}; }
+    }
+
     function esc(s) {
         const d = document.createElement('div');
         d.textContent = s || '';
         return d.innerHTML;
     }
 
-    return { init, addRequest, clearAll };
+    return { init, addRequest, clearAll, loadHistory };
 })();
