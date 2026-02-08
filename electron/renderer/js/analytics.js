@@ -4,11 +4,10 @@
  * Sections:
  *  1. Security Headers Audit — check responses for missing OWASP-recommended headers
  *  2. Response Timing Analysis — spot outliers suggesting time-based injection or WAFs
- *  3. JWT / Token Decoder — auto-detect and decode JWTs found in requests
- *  4. Parameter Profiling — catalog every parameter, its types, injection acceptance rate
- *  5. Technology Fingerprint — detect server stack from headers and error bodies
- *  6. Attack Surface Heatmap — visual grid: endpoint × injection type → result
- *  7. Postman Export
+ *  3. Parameter Profiling — catalog every parameter, its types, injection acceptance rate
+ *  4. Technology Fingerprint — detect server stack from headers and error bodies
+ *  5. Attack Surface Heatmap — visual grid: endpoint × injection type → result
+ *  6. Postman Export
  */
 window.Analytics = (() => {
     const API = 'http://127.0.0.1:8000/api';
@@ -46,7 +45,6 @@ window.Analytics = (() => {
         const sections = [
             renderSecurityHeaders,
             renderTimingAnalysis,
-            renderJwtDecoder,
             renderParamProfile,
             renderTechFingerprint,
             renderAttackSurface,
@@ -133,7 +131,7 @@ window.Analytics = (() => {
         scanData.forEach(r => {
             const key = _basePath(r.target_url);
             if (!byEndpoint[key]) byEndpoint[key] = { entries: [], sample: r };
-            byEndpoint[key].entries.push({ time: r.response_time_ms, payload: r.payload, vuln: r.is_vulnerable, type: r.injector_type });
+            byEndpoint[key].entries.push({ time: r.response_time_ms, payload: r.payload, vuln: r.is_vulnerable, type: r.injector_type, scan: r });
         });
 
         if (!Object.keys(byEndpoint).length) {
@@ -142,7 +140,10 @@ window.Analytics = (() => {
             return;
         }
 
-        html += '<p style="font-size:11px;color:var(--text-dim);margin-bottom:10px">Bars show response time distribution. Red bars are flagged payloads. Outliers may indicate time-based injection or WAF throttling. Right-click an endpoint to send to Repeater or Injector.</p>';
+        html += '<p style="font-size:11px;color:var(--text-dim);margin-bottom:10px">Bars show response time distribution. Red bars are flagged payloads. Outliers may indicate time-based injection or WAF throttling. Right-click an outlier to send to Repeater or Injector.</p>';
+
+        // Flat list of all outlier scan entries for context menu binding
+        const outlierScans = [];
 
         const endpointKeys = Object.keys(byEndpoint);
         for (let ei = 0; ei < endpointKeys.length; ei++) {
@@ -153,14 +154,13 @@ window.Analytics = (() => {
 
             const avg = times.reduce((a, b) => a + b, 0) / times.length;
             const max = Math.max(...times);
-            const min = Math.min(...times);
             const stddev = Math.sqrt(times.reduce((s, t) => s + (t - avg) ** 2, 0) / times.length);
 
             // Find outliers (> 2 stddev from mean)
             const outliers = entries.filter(e => e.time > avg + 2 * stddev);
 
-            html += `<div class="timing-endpoint analytics-ctx-timing" data-te-idx="${ei}">`;
-            html += `<div class="timing-header"><span class="endpoint-doc-path">${esc(_shortPath(endpoint))}</span>`;
+            html += `<div class="timing-endpoint">`;
+            html += `<div class="timing-header analytics-ctx-endpoint" data-te-idx="${ei}"><span class="endpoint-doc-path">${esc(_shortPath(endpoint))}</span>`;
             html += `<span class="badge">${times.length} tests</span>`;
             html += `<span class="badge">avg ${avg.toFixed(0)}ms</span>`;
             html += `<span class="badge">σ ${stddev.toFixed(0)}ms</span>`;
@@ -178,11 +178,13 @@ window.Analytics = (() => {
             });
             html += '</div>';
 
-            // List outliers
+            // List outliers — each row is individually interactive
             if (outliers.length) {
                 html += '<div class="timing-outliers">';
                 outliers.slice(0, 5).forEach(o => {
-                    html += `<div class="timing-outlier-row"><span class="badge badge-high">${o.time.toFixed(0)}ms</span> <span class="audit-desc">${esc(o.type)} — ${esc((o.payload || '').slice(0, 60))}</span></div>`;
+                    const oi = outlierScans.length;
+                    outlierScans.push(o.scan);
+                    html += `<div class="timing-outlier-row analytics-ctx-outlier" data-oi="${oi}"><span class="badge badge-high">${o.time.toFixed(0)}ms</span> <span class="audit-desc">${esc(o.type)} — ${esc((o.payload || '').slice(0, 60))}</span></div>`;
                 });
                 html += '</div>';
             }
@@ -191,8 +193,8 @@ window.Analytics = (() => {
 
         container.innerHTML = html;
 
-        // Bind right-click context menus on timing endpoints
-        container.querySelectorAll('.analytics-ctx-timing').forEach(el => {
+        // Bind right-click context menus on endpoint headers
+        container.querySelectorAll('.analytics-ctx-endpoint').forEach(el => {
             el.addEventListener('contextmenu', (e) => {
                 e.preventDefault();
                 const key = endpointKeys[Number(el.dataset.teIdx)];
@@ -201,91 +203,19 @@ window.Analytics = (() => {
                 _showAnalyticsCtx(e.clientX, e.clientY, sample);
             });
         });
-    }
 
-    // ── 3. JWT / Token Decoder ──────────────────────────────────────
-
-    function renderJwtDecoder(container) {
-        let html = '<div class="analytics-section-title">JWT / Token Analysis</div>';
-
-        const jwts = new Map(); // token → { decoded, source }
-
-        // Scan request bodies and headers for JWTs
-        [...logData, ...scanData].forEach(entry => {
-            const sources = [
-                entry.request_body || '',
-                JSON.stringify(entry.request_headers || {}),
-                entry.response_body || '',
-            ];
-            sources.forEach(src => {
-                const matches = src.match(/eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g);
-                if (matches) matches.forEach(t => {
-                    if (!jwts.has(t)) jwts.set(t, _decodeJwt(t));
-                });
-            });
-        });
-
-        if (!jwts.size) {
-            html += '<p class="placeholder-text">No JWTs detected in traffic</p>';
-            container.innerHTML = html;
-            return;
-        }
-
-        html += `<p style="font-size:11px;color:var(--text-dim);margin-bottom:10px">${jwts.size} unique JWT${jwts.size > 1 ? 's' : ''} found in traffic</p>`;
-
-        let idx = 0;
-        for (const [token, decoded] of jwts) {
-            if (idx >= 10) break; // cap display
-            const short = token.slice(0, 30) + '...' + token.slice(-10);
-            html += `<div class="jwt-entry">`;
-            html += `<div class="jwt-header" data-jwt-idx="${idx}"><span class="badge">${decoded.header?.alg || '?'}</span> <code>${esc(short)}</code></div>`;
-            html += `<div class="jwt-details hidden" data-jwt-idx="${idx}">`;
-
-            // Header
-            html += `<div class="jwt-section"><strong>Header:</strong><pre class="scan-response-body">${esc(JSON.stringify(decoded.header, null, 2))}</pre></div>`;
-
-            // Payload
-            html += `<div class="jwt-section"><strong>Payload:</strong><pre class="scan-response-body">${esc(JSON.stringify(decoded.payload, null, 2))}</pre></div>`;
-
-            // Expiry analysis
-            if (decoded.payload?.exp) {
-                const expDate = new Date(decoded.payload.exp * 1000);
-                const now = new Date();
-                const expired = expDate < now;
-                const badge = expired ? 'badge-high' : 'badge-safe';
-                const label = expired ? `Expired ${_timeAgo(expDate)}` : `Expires ${_timeAgo(expDate)}`;
-                html += `<div class="jwt-section"><span class="badge ${badge}">${label}</span></div>`;
-            }
-
-            // Security concerns
-            const concerns = [];
-            if (decoded.header?.alg === 'none') concerns.push('Algorithm "none" — unsigned token!');
-            if (decoded.header?.alg === 'HS256') concerns.push('HS256 — vulnerable to brute-force if weak secret');
-            if (decoded.payload?.role === 'admin') concerns.push('Admin role in token — verify server-side validation');
-            if (decoded.payload?.['User-IP']) concerns.push('IP address embedded — possible IP-binding authentication');
-            if (concerns.length) {
-                html += '<div class="jwt-section"><strong>Notes:</strong>';
-                concerns.forEach(c => { html += `<div class="audit-row audit-fail audit-medium"><span class="audit-icon">⚠</span> ${esc(c)}</div>`; });
-                html += '</div>';
-            }
-
-            html += '</div></div>';
-            idx++;
-        }
-
-        container.innerHTML = html;
-
-        // Toggle
-        container.querySelectorAll('.jwt-header').forEach(hdr => {
-            hdr.style.cursor = 'pointer';
-            hdr.addEventListener('click', () => {
-                const i = hdr.dataset.jwtIdx;
-                container.querySelector(`.jwt-details[data-jwt-idx="${i}"]`).classList.toggle('hidden');
+        // Bind right-click context menus on individual outlier rows
+        container.querySelectorAll('.analytics-ctx-outlier').forEach(el => {
+            el.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                const scan = outlierScans[Number(el.dataset.oi)];
+                if (!scan) return;
+                _showAnalyticsCtx(e.clientX, e.clientY, scan);
             });
         });
     }
 
-    // ── 4. Parameter Profiling ──────────────────────────────────────
+    // ── 3. Parameter Profiling ──────────────────────────────────────
 
     function renderParamProfile(container) {
         let html = '<div class="analytics-section-title">Parameter Injection Profile</div>';
@@ -358,7 +288,7 @@ window.Analytics = (() => {
         });
     }
 
-    // ── 5. Technology Fingerprint ───────────────────────────────────
+    // ── 4. Technology Fingerprint ───────────────────────────────────
 
     function renderTechFingerprint(container) {
         let html = '<div class="analytics-section-title">Technology Fingerprint</div>';
@@ -414,7 +344,7 @@ window.Analytics = (() => {
         container.innerHTML = html;
     }
 
-    // ── 6. Attack Surface Heatmap ───────────────────────────────────
+    // ── 5. Attack Surface Heatmap ───────────────────────────────────
 
     function renderAttackSurface(container) {
         let html = '<div class="analytics-section-title">Attack Surface Heatmap</div>';
@@ -559,25 +489,6 @@ window.Analytics = (() => {
     }
 
     // ── Helpers ─────────────────────────────────────────────────────
-
-    function _decodeJwt(token) {
-        try {
-            const parts = token.split('.');
-            const header = JSON.parse(atob(parts[0].replace(/-/g, '+').replace(/_/g, '/')));
-            const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
-            return { header, payload };
-        } catch (_) { return { header: {}, payload: {} }; }
-    }
-
-    function _timeAgo(date) {
-        const diff = Date.now() - date.getTime();
-        const abs = Math.abs(diff);
-        const ago = diff > 0;
-        if (abs < 60000) return (ago ? '' : 'in ') + 'just now';
-        if (abs < 3600000) return (ago ? '' : 'in ') + Math.floor(abs / 60000) + 'm' + (ago ? ' ago' : '');
-        if (abs < 86400000) return (ago ? '' : 'in ') + Math.floor(abs / 3600000) + 'h' + (ago ? ' ago' : '');
-        return (ago ? '' : 'in ') + Math.floor(abs / 86400000) + 'd' + (ago ? ' ago' : '');
-    }
 
     function _host(url) { try { return new URL(url).host; } catch (_) { return 'unknown'; } }
     function _basePath(url) { try { const u = new URL(url); return u.origin + u.pathname; } catch (_) { return url; } }

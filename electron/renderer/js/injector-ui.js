@@ -398,17 +398,40 @@ window.InjectorUI = (() => {
             'csrftoken', 'csrf_token', 'x-csrf-token',
         ]);
 
-        keyPickerEl.innerHTML = keys.map(({ source, key }) => {
-            const tag = source === 'param' ? 'P' : source === 'header' ? 'H' : 'B';
-            const id = source + ':' + key;
-            // On first render, auto-uncheck auth keys; otherwise preserve previous state
-            const leafKey = key.includes('.') ? key.split('.').pop() : key;
-            const isAuth = AUTH_KEYS.has(leafKey.toLowerCase());
-            const checked = isFirstRender
-                ? (isAuth ? '' : 'checked')
-                : (prev.has(id) ? 'checked' : '');
-            return `<label><input type="checkbox" data-key="${esc(key)}" data-source="${source}" ${checked}> [${tag}] ${esc(key)}</label>`;
-        }).join(' ');
+        // Group keys by source
+        const grouped = {};
+        keys.forEach(({ source, key }) => {
+            if (!grouped[source]) grouped[source] = [];
+            grouped[source].push(key);
+        });
+
+        const sourceLabels = { param: 'Params', header: 'Headers', body: 'Body' };
+        let html = '<table><thead><tr><th></th><th>Source</th><th>Key</th></tr></thead><tbody>';
+        for (const [source, sourceKeys] of Object.entries(grouped)) {
+            sourceKeys.forEach((key, i) => {
+                const id = source + ':' + key;
+                const leafKey = key.includes('.') ? key.split('.').pop() : key;
+                const isAuth = AUTH_KEYS.has(leafKey.toLowerCase());
+                const checked = isFirstRender
+                    ? (isAuth ? '' : 'checked')
+                    : (prev.has(id) ? 'checked' : '');
+                const label = i === 0 ? `<span class="key-picker-source">${sourceLabels[source] || source}</span>` : '';
+                html += `<tr><td><input type="checkbox" data-key="${esc(key)}" data-source="${source}" ${checked}></td><td>${label}</td><td class="key-picker-key">${esc(key)}</td></tr>`;
+            });
+        }
+        html += '</tbody></table>';
+        keyPickerEl.innerHTML = html;
+
+        // Click anywhere on a row to toggle its checkbox
+        keyPickerEl.querySelectorAll('tr').forEach(row => {
+            const cb = row.querySelector('input[type="checkbox"]');
+            if (!cb) return;
+            row.style.cursor = 'pointer';
+            row.addEventListener('click', (e) => {
+                if (e.target === cb) return;
+                cb.checked = !cb.checked;
+            });
+        });
     }
 
     function walkKeys(obj, prefix, out) {
