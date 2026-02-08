@@ -989,6 +989,24 @@ html, body {
     cursor: pointer;
 }
 
+/* ── Analyze Filtered Button ──────────────────────────────────────── */
+#btn-analyze-filtered {
+    background: var(--accent-dim);
+    color: #fff;
+    border-color: var(--accent-dim);
+}
+#btn-analyze-filtered:hover { background: var(--accent); }
+
+/* ── Analytics Filter Bar ────────────────────────────────────────── */
+#analytics-filter-bar {
+    background: rgba(31,111,235,.08);
+    border-bottom-color: var(--accent-dim);
+}
+#analytics-filter-bar .status-label {
+    color: var(--accent);
+    font-weight: 600;
+}
+
 /* ── Analytics ────────────────────────────────────────────────────── */
 #analytics-body-content { flex: 1; padding: 10px; }
 

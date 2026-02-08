@@ -138,6 +138,10 @@
                     <button id="btn-stop-scan" class="btn-small danger hidden">Stop</button>
                 </div>
             </div>
+            <div id="scan-results-toolbar" class="pane-controls hidden">
+                <input type="text" id="scan-text-filter" placeholder="Filter results...">
+                <button id="btn-analyze-filtered" class="btn-small">Analyze Filtered</button>
+            </div>
             <div id="scan-results" class="scrollable"></div>
         </div>
 
@@ -178,7 +182,10 @@
         <!-- Credentials -->
         <!-- Analytics -->
         <div class="tab-pane" data-tab="analytics">
-            <div class="pane-controls" style="display:none"></div>
+            <div id="analytics-filter-bar" class="pane-controls hidden">
+                <span id="analytics-filter-label" class="status-label" style="flex:1"></span>
+                <button id="btn-analytics-full" class="btn-small">Show Full Analysis</button>
+            </div>
             <div id="analytics-body-content" class="scrollable"></div>
         </div>
 

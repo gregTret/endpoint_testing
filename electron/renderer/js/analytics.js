@@ -13,15 +13,36 @@ window.Analytics = (() => {
     const API = 'http://127.0.0.1:8000/api';
     let scanData = [];
     let logData  = [];
+    let filteredMode = false;
 
     function init() {
-        // refresh is called automatically when the analytics tab is activated (via app.js switchTab)
+        document.getElementById('btn-analytics-full').addEventListener('click', () => {
+            filteredMode = false;
+            document.getElementById('analytics-filter-bar').classList.add('hidden');
+            refresh();
+        });
     }
 
     async function refresh() {
+        filteredMode = false;
+        document.getElementById('analytics-filter-bar').classList.add('hidden');
+
         document.getElementById('analytics-body-content').innerHTML =
             '<p class="placeholder-text" style="padding:20px">Analyzing...</p>';
         await Promise.all([fetchScans(), fetchLogs()]);
+        render();
+    }
+
+    function analyzeSubset(results) {
+        filteredMode = true;
+        scanData = results;
+        logData = [];
+
+        const filterBar = document.getElementById('analytics-filter-bar');
+        const filterLabel = document.getElementById('analytics-filter-label');
+        filterBar.classList.remove('hidden');
+        filterLabel.textContent = `Filtered analysis: ${results.length} scan result${results.length !== 1 ? 's' : ''}`;
+
         render();
     }
 
@@ -85,7 +106,9 @@ window.Analytics = (() => {
         let html = '<div class="analytics-section-title">Security Headers Audit</div>';
 
         if (!Object.keys(hostHeaders).length) {
-            html += '<p class="placeholder-text">No logged responses to audit</p>';
+            html += filteredMode
+                ? '<p class="placeholder-text">Not available in filtered mode (requires full request log data)</p>'
+                : '<p class="placeholder-text">No logged responses to audit</p>';
             container.innerHTML = html;
             return;
         }
@@ -326,7 +349,9 @@ window.Analytics = (() => {
         if (/postgres/i.test(errorBodies)) signals.push({ source: 'Error body', value: 'PostgreSQL', confidence: 'high' });
 
         if (!signals.length) {
-            html += '<p class="placeholder-text">No technology signatures detected. The target may have good information hiding.</p>';
+            html += filteredMode
+                ? '<p class="placeholder-text">Not available in filtered mode (requires full request log data)</p>'
+                : '<p class="placeholder-text">No technology signatures detected. The target may have good information hiding.</p>';
             container.innerHTML = html;
             return;
         }
@@ -496,5 +521,5 @@ window.Analytics = (() => {
     function _prettyJson(s) { try { return JSON.stringify(JSON.parse(s), null, 2); } catch (_) { return s; } }
     function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
 
-    return { init, refresh };
+    return { init, refresh, analyzeSubset };
 })();

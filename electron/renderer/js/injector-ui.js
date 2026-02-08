@@ -9,6 +9,8 @@ window.InjectorUI = (() => {
     let currentScanId = null;
 
     let keyPickerGroup, keyPickerEl;
+    let scanToolbar, textFilterEl, analyzeBtn;
+    let textFilter = '';
 
     function init() {
         urlEl      = document.getElementById('inject-url');
@@ -23,11 +25,33 @@ window.InjectorUI = (() => {
         resultsEl  = document.getElementById('scan-results');
         keyPickerGroup = document.getElementById('key-picker-group');
         keyPickerEl    = document.getElementById('key-picker');
+        scanToolbar    = document.getElementById('scan-results-toolbar');
+        textFilterEl   = document.getElementById('scan-text-filter');
+        analyzeBtn     = document.getElementById('btn-analyze-filtered');
 
         scanBtn.addEventListener('click', startScan);
         pauseBtn.addEventListener('click', togglePause);
         stopBtn.addEventListener('click', stopScan);
         document.getElementById('btn-send-single').addEventListener('click', sendSingle);
+
+        textFilterEl.addEventListener('input', () => {
+            textFilter = textFilterEl.value.toLowerCase();
+            renderResults(lastResults);
+        });
+
+        analyzeBtn.addEventListener('click', () => {
+            const visible = getVisibleResults();
+            if (!visible.length) { alert('No results to analyze'); return; }
+            if (!document.querySelector('#tab-bar .tab[data-tab="analytics"]')) {
+                alert('Analytics tab is hidden. Enable it in Settings first.');
+                return;
+            }
+            Analytics.analyzeSubset(visible);
+            document.querySelectorAll('#tab-bar .tab').forEach(t =>
+                t.classList.toggle('active', t.dataset.tab === 'analytics'));
+            document.querySelectorAll('.tab-pane').forEach(p =>
+                p.classList.toggle('active', p.dataset.tab === 'analytics'));
+        });
 
         // Refresh key picker whenever params, headers, or body change
         paramsEl.addEventListener('input', refreshKeyPicker);
@@ -43,6 +67,8 @@ window.InjectorUI = (() => {
     }
 
     async function loadHistory() {
+        textFilter = '';
+        if (textFilterEl) textFilterEl.value = '';
         try {
             const res = await fetch(`${API}/scan/history`);
             const data = await res.json();
@@ -236,10 +262,31 @@ window.InjectorUI = (() => {
     let activeFilter = 'all';
     const expandedSet = new Set(); // track expanded result indices across re-renders
 
+    function getVisibleResults() {
+        let results = lastResults;
+        if (activeFilter === 'vuln') results = results.filter(r => r.is_vulnerable);
+        else if (activeFilter === 'safe') results = results.filter(r => !r.is_vulnerable);
+
+        if (textFilter) {
+            results = results.filter(r => {
+                const haystack = [
+                    r.payload, r.original_param, r.target_url,
+                    r.details, r.injection_point, r.injector_type,
+                    String(r.response_code),
+                ].join(' ').toLowerCase();
+                return haystack.includes(textFilter);
+            });
+        }
+        return results;
+    }
+
     function renderResults(results) {
         if (results !== lastResults) {
             lastResults = results;
         }
+
+        if (scanToolbar) scanToolbar.classList.toggle('hidden', !lastResults.length);
+
         if (!lastResults.length) {
             resultsEl.innerHTML = '<p class="placeholder-text">No results yet</p>';
             return;
@@ -247,20 +294,17 @@ window.InjectorUI = (() => {
 
         const vulns = lastResults.filter(r => r.is_vulnerable);
         const safe  = lastResults.filter(r => !r.is_vulnerable);
+        const filtered = getVisibleResults();
 
         const btnCls = (f) => `scan-filter-btn${activeFilter === f ? ' active' : ''}`;
         const summary = `<div class="scan-summary">
-            <span>${lastResults.length} tests | <span style="color:var(--danger)">${vulns.length} vulns</span></span>
+            <span>${lastResults.length} tests | <span style="color:var(--danger)">${vulns.length} vulns</span>${textFilter ? ` | <span style="color:var(--accent)">${filtered.length} matching</span>` : ''}</span>
             <span class="scan-filters">
                 <button class="${btnCls('all')}" data-filter="all">All (${lastResults.length})</button>
                 <button class="${btnCls('vuln')}" data-filter="vuln">Vulnerable (${vulns.length})</button>
                 <button class="${btnCls('safe')}" data-filter="safe">Safe (${safe.length})</button>
             </span>
         </div>`;
-
-        const filtered = activeFilter === 'vuln' ? vulns
-                       : activeFilter === 'safe' ? safe
-                       : lastResults;
 
         const rows = filtered.map((r, i) => {
             const cls = r.is_vulnerable ? 'scan-vuln' : 'scan-safe';
@@ -488,5 +532,5 @@ window.InjectorUI = (() => {
         resultsEl.innerHTML = '<p class="placeholder-text">No results yet</p>';
     }
 
-    return { init, loadFromLog, populateFromLog: loadFromLog, loadHistory, clearHistory };
+    return { init, loadFromLog, populateFromLog: loadFromLog, loadHistory, clearHistory, getVisibleResults };
 })();
