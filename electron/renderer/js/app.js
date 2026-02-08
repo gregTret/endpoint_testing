@@ -16,11 +16,12 @@
 
     // ── Tab definitions (default order) ─────────────────────────────
     const ALL_TABS = [
-        { id: 'logs',     label: 'Logs' },
-        { id: 'sitemap',  label: 'Site Map' },
-        { id: 'injector', label: 'Injector' },
-        { id: 'repeater', label: 'Repeater' },
-        { id: 'settings', label: 'Settings' },
+        { id: 'logs',      label: 'Logs' },
+        { id: 'sitemap',   label: 'Site Map' },
+        { id: 'injector',  label: 'Injector' },
+        { id: 'repeater',  label: 'Repeater' },
+        { id: 'analytics', label: 'Analytics' },
+        { id: 'settings',  label: 'Settings' },
     ];
 
     let tabConfig = []; // [{ id, visible }] — current workspace config
@@ -65,6 +66,7 @@
         Credentials.init();
         InjectorUI.init();
         Repeater.init();
+        Analytics.init();
 
         // URL bar
         document.getElementById('btn-go').addEventListener('click', navigate);
@@ -92,6 +94,9 @@
             if (!confirm('Clear all repeater history?')) return;
             if (Repeater.clearAll) Repeater.clearAll();
         });
+
+        // Export modal
+        initExportModal();
 
         // Panel resize drag handle
         initPanelResize();
@@ -125,7 +130,13 @@
                 tabConfig = saved.filter(t => ALL_TABS.some(a => a.id === t.id));
                 for (const t of ALL_TABS) {
                     if (!savedIds.has(t.id)) {
-                        tabConfig.push({ id: t.id, visible: true });
+                        // Insert new tabs before settings
+                        const settingsIdx = tabConfig.findIndex(c => c.id === 'settings');
+                        if (settingsIdx >= 0) {
+                            tabConfig.splice(settingsIdx, 0, { id: t.id, visible: true });
+                        } else {
+                            tabConfig.push({ id: t.id, visible: true });
+                        }
                     }
                 }
                 return;
@@ -295,6 +306,8 @@
         document.querySelectorAll('.tab-pane').forEach(p => {
             p.classList.toggle('active', p.dataset.tab === tabName);
         });
+        // Load analytics data when switching to that tab
+        if (tabName === 'analytics' && Analytics.refresh) Analytics.refresh();
     }
 
     // ── Panel resize ────────────────────────────────────────────────
@@ -331,4 +344,191 @@
             document.body.style.userSelect = '';
         });
     }
+
+    // ── Export Modal ────────────────────────────────────────────────
+
+    function initExportModal() {
+        const modal      = document.getElementById('export-modal');
+        const fmtSel     = document.getElementById('export-format');
+        const filterBar  = document.getElementById('export-site-filter');
+        const filterLbl  = document.getElementById('export-site-label');
+        let siteFilter   = null; // e.g. "dev.buildmybridges.com" or "dev.buildmybridges.com/api"
+
+        function openModal()  { modal.classList.remove('hidden'); window.electronAPI.hideBrowser(); }
+        function closeModal() { modal.classList.add('hidden'); siteFilter = null; filterBar.classList.add('hidden'); const wsId = Workspace.getActiveId(); const lastUrl = localStorage.getItem(`ws_lastUrl_${wsId}`) || ''; window.electronAPI.showBrowser(wsId, lastUrl); }
+
+        // Expose globally so site-map can call it
+        window.openExportForSite = function (prefix) {
+            siteFilter = prefix || null;
+            if (siteFilter) {
+                filterLbl.textContent = siteFilter;
+                filterBar.classList.remove('hidden');
+                // Pre-select relevant data types
+                modal.querySelectorAll('.checkbox-group input').forEach(cb => {
+                    cb.checked = ['logs', 'scans', 'sitemap'].includes(cb.value);
+                });
+            } else {
+                filterBar.classList.add('hidden');
+            }
+            openModal();
+        };
+
+        document.getElementById('btn-export-clear-filter').addEventListener('click', () => {
+            siteFilter = null;
+            filterBar.classList.add('hidden');
+        });
+
+        document.getElementById('btn-open-export').addEventListener('click', () => {
+            siteFilter = null;
+            filterBar.classList.add('hidden');
+            openModal();
+        });
+        document.getElementById('btn-export-close').addEventListener('click', closeModal);
+        modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+
+        function _matchesSite(rawUrl) {
+            if (!siteFilter) return true;
+            if (!rawUrl) return false;
+            // Match against host+pathname  e.g. siteFilter = "dev.example.com" or "dev.example.com/api"
+            try {
+                const u = new URL(rawUrl);
+                const hostPath = u.host + u.pathname;          // "dev.example.com/foo/bar"
+                if (u.host === siteFilter) return true;        // host-level match
+                if (hostPath === siteFilter) return true;      // exact match
+                if (hostPath.startsWith(siteFilter + '/')) return true; // prefix match
+                if (hostPath.startsWith(siteFilter)) return true;      // partial path match
+                return false;
+            } catch (_) {
+                // Fallback: plain string contains
+                return rawUrl.includes(siteFilter);
+            }
+        }
+
+        document.getElementById('btn-export-run').addEventListener('click', async () => {
+            const selected = new Set();
+            modal.querySelectorAll('.checkbox-group input:checked').forEach(cb => selected.add(cb.value));
+            const fmt = fmtSel.value;
+
+            if (!selected.size) { alert('Select at least one data type'); return; }
+
+            const active = siteFilter; // capture current filter before async calls
+            console.log('[Export] site filter:', active);
+
+            // Fetch selected data then filter by site if needed
+            const data = {};
+            if (selected.has('logs')) {
+                let logs = await _fetchJson(`${API}/logs?limit=10000`);
+                if (active) { const before = logs.length; logs = logs.filter(l => _matchesSite(l.url)); console.log(`[Export] logs ${before} → ${logs.length}`); }
+                data.logs = logs;
+            }
+            if (selected.has('scans')) {
+                let scans = await _fetchJson(`${API}/scan/history?limit=10000`);
+                if (active) { const before = scans.length; scans = scans.filter(r => _matchesSite(r.target_url)); console.log(`[Export] scans ${before} → ${scans.length}`); }
+                data.scans = scans;
+            }
+            if (selected.has('sitemap')) {
+                let urls = await _fetchJson(`${API}/sitemap`);
+                // sitemap returns plain strings
+                if (active) { const before = urls.length; urls = urls.filter(u => _matchesSite(typeof u === 'string' ? u : u.url)); console.log(`[Export] sitemap ${before} → ${urls.length}`); }
+                data.sitemap = urls;
+            }
+            if (selected.has('credentials')) data.credentials = await _fetchJson(`${API}/credentials`);
+            if (selected.has('repeater')) {
+                let rep = await _fetchJson(`${API}/repeater/history`);
+                if (active) { const before = rep.length; rep = rep.filter(r => _matchesSite(r.url)); console.log(`[Export] repeater ${before} → ${rep.length}`); }
+                data.repeater = rep;
+            }
+
+            let blob, filename;
+            const tag = siteFilter ? siteFilter.replace(/[^a-zA-Z0-9]/g, '_') : '';
+
+            if (fmt === 'postman') {
+                const collection = _buildPostman(data.logs || []);
+                blob = new Blob([JSON.stringify(collection, null, 2)], { type: 'application/json' });
+                filename = `postman_${tag || 'collection'}_${Date.now()}.json`;
+            } else if (fmt === 'csv') {
+                const csv = _buildCsv(data);
+                blob = new Blob([csv], { type: 'text/csv' });
+                filename = `export_${tag || 'data'}_${Date.now()}.csv`;
+            } else {
+                blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                filename = `export_${tag || 'data'}_${Date.now()}.json`;
+            }
+
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(a.href);
+            closeModal();
+        });
+    }
+
+    async function _fetchJson(url) {
+        try { return await (await fetch(url)).json(); }
+        catch (_) { return []; }
+    }
+
+    function _buildPostman(logs) {
+        const seen = {};
+        const items = [];
+        (logs || []).forEach(l => {
+            const key = `${l.method} ${_basePath(l.url)}`;
+            if (seen[key]) return;
+            seen[key] = true;
+            let u; try { u = new URL(l.url); } catch (_) { return; }
+            const item = {
+                name: `${l.method} ${u.pathname}`,
+                request: {
+                    method: l.method,
+                    header: Object.entries(l.request_headers || {})
+                        .filter(([k]) => !['host','content-length','transfer-encoding','connection','accept-encoding'].includes(k.toLowerCase()))
+                        .map(([k, v]) => ({ key: k, value: v })),
+                    url: {
+                        raw: l.url,
+                        protocol: u.protocol.replace(':', ''),
+                        host: u.hostname.split('.'),
+                        port: u.port || '',
+                        path: u.pathname.split('/').filter(Boolean),
+                        query: [...u.searchParams].map(([k, v]) => ({ key: k, value: v })),
+                    },
+                },
+            };
+            if (l.request_body) {
+                item.request.body = { mode: 'raw', raw: l.request_body, options: { raw: { language: 'json' } } };
+            }
+            items.push(item);
+        });
+        return {
+            info: { name: `Endpoint Security — ${new Date().toLocaleDateString()}`, schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' },
+            item: items,
+        };
+    }
+
+    function _buildCsv(data) {
+        const lines = [];
+        if (data.logs?.length) {
+            lines.push('=== REQUEST LOGS ===');
+            lines.push('timestamp,method,url,status_code,duration_ms,content_type');
+            data.logs.forEach(l => {
+                lines.push([l.timestamp, l.method, `"${(l.url||'').replace(/"/g,'""')}"`, l.status_code, l.duration_ms, l.content_type].join(','));
+            });
+        }
+        if (data.scans?.length) {
+            lines.push('');
+            lines.push('=== SCAN RESULTS ===');
+            lines.push('timestamp,target_url,injector_type,injection_point,original_param,payload,response_code,response_time_ms,is_vulnerable,confidence,details');
+            data.scans.forEach(r => {
+                lines.push([r.timestamp, `"${(r.target_url||'').replace(/"/g,'""')}"`, r.injector_type, r.injection_point, r.original_param,
+                    `"${(r.payload||'').replace(/"/g,'""')}"`, r.response_code, r.response_time_ms, r.is_vulnerable, r.confidence,
+                    `"${(r.details||'').replace(/"/g,'""')}"`].join(','));
+            });
+        }
+        return lines.join('\n');
+    }
+
+    function _basePath(url) {
+        try { const u = new URL(url); return u.origin + u.pathname; } catch (_) { return url; }
+    }
 })();
+
