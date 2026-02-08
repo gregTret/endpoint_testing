@@ -38,6 +38,13 @@ class SQLInjector(BaseInjector):
         r"quoted string not properly terminated",
     ]
 
+    def generate_quick_payloads(self, context: dict) -> list[str]:
+        return [
+            "'",                        # error-based probe
+            "' OR 1=1--",               # tautology / auth bypass
+            "' AND SLEEP(3)--",         # time-blind
+        ]
+
     def generate_payloads(self, context: dict) -> list[str]:
         return [
             # ── Error-based ──

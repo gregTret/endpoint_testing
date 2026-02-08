@@ -39,6 +39,10 @@ from injectors.aql_injector import AQLInjector
 from injectors.xss_injector import XSSInjector
 from injectors.mongo_injector import MongoInjector
 from injectors.jwt_injector import JWTInjector
+from injectors.ssti_injector import SSTIInjector
+from injectors.cmd_injector import CmdInjector
+from injectors.path_traversal_injector import PathTraversalInjector
+from injectors.quick_scan_injector import QuickScanInjector
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -50,6 +54,10 @@ INJECTORS = {
     "xss": XSSInjector,
     "mongo": MongoInjector,
     "jwt": JWTInjector,
+    "ssti": SSTIInjector,
+    "cmd": CmdInjector,
+    "traversal": PathTraversalInjector,
+    "quick": QuickScanInjector,
 }
 
 # Spider reference — set by main.py at startup
@@ -230,7 +238,10 @@ async def start_scan(config: ScanConfig, background_tasks: BackgroundTasks):
             },
         )
 
-    injector = injector_cls()
+    if config.injector_type == "quick":
+        injector = injector_cls(injector_registry=INJECTORS)
+    else:
+        injector = injector_cls()
     points = config.injection_points or ["params"]
     scan_id = uuid.uuid4().hex[:12]
     _scan_status = {

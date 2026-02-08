@@ -502,9 +502,20 @@ window.InjectorUI = (() => {
         menu.querySelector('[data-action="repeater"]').addEventListener('click', () => {
             let hdrs = {};
             try { hdrs = typeof r.request_headers === 'string' ? JSON.parse(r.request_headers) : (r.request_headers || {}); } catch (_) {}
+
+            // Reconstruct URL with params for param-injected requests
+            let fullUrl = r.target_url || '';
+            if (r.injection_point === 'params') {
+                let params = {};
+                try { params = paramsEl.value ? JSON.parse(paramsEl.value) : {}; } catch (_) {}
+                params[r.original_param] = r.payload;
+                const qs = new URLSearchParams(params).toString();
+                if (qs) fullUrl += '?' + qs;
+            }
+
             Repeater.addRequest({
                 method: methodEl.value || 'POST',
-                url: r.target_url || '',
+                url: fullUrl,
                 headers: hdrs,
                 body: r.request_body || '',
             });

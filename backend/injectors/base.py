@@ -4,6 +4,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
+from urllib.parse import urlparse, parse_qs, urlunparse
 
 import httpx
 
@@ -24,6 +25,27 @@ _DROP_HEADERS = frozenset({
 
 # Marker header so the mitmproxy addon skips logging scan traffic
 _SCAN_MARKER = {"x-ept-scan": "1"}
+
+
+def _normalize_url_params(url: str, params: dict) -> tuple[str, dict]:
+    """Strip query string from URL and merge into params dict.
+
+    httpx appends ``params`` to any query string already in the URL,
+    which causes duplicate keys and prevents payload injection from
+    actually replacing original values.  This helper moves everything
+    into the params dict so injection works correctly.
+    """
+    parsed = urlparse(url)
+    if not parsed.query:
+        return url, dict(params)
+    url_params = parse_qs(parsed.query, keep_blank_values=True)
+    merged = {}
+    for k, v in url_params.items():
+        merged[k] = v[0] if len(v) == 1 else v[-1]
+    # Explicit params override URL-embedded ones
+    merged.update(params)
+    clean_url = urlunparse(parsed._replace(query=""))
+    return clean_url, merged
 
 
 class BaseInjector(ABC):
@@ -50,6 +72,14 @@ class BaseInjector(ABC):
     def generate_payloads(self, context: dict) -> list[str]:
         """Return a list of injection payloads to try."""
         ...
+
+    def generate_quick_payloads(self, context: dict) -> list[str]:
+        """Return a small set of the most critical payloads for quick scanning.
+
+        Override in subclasses to provide curated high-signal payloads.
+        Default: first 3 payloads from the full set.
+        """
+        return self.generate_payloads(context)[:3]
 
     @abstractmethod
     def analyze_response(
@@ -89,6 +119,10 @@ class BaseInjector(ABC):
         injection_points = injection_points or ["params"]
         results: list[ScanResult] = []
         ctrl = control or {"signal": "run"}
+
+        # Merge any query params embedded in the URL into the params dict
+        # so injections actually replace values instead of appending duplicates
+        url, params = _normalize_url_params(url, params)
 
         baseline = await self._send_request(url, method, params, headers, body, timeout)
         payloads = self.generate_payloads(

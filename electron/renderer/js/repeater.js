@@ -111,6 +111,11 @@ window.Repeater = (() => {
                 _loadEntry(history[selectedIdx]);
                 renderList();
             });
+            el.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                const entry = history[Number(el.dataset.idx)];
+                if (entry) _showCtxMenu(e.clientX, e.clientY, entry);
+            });
         });
 
         listEl.querySelectorAll('.repeater-remove').forEach(btn => {
@@ -215,6 +220,39 @@ window.Repeater = (() => {
         const d = document.createElement('div');
         d.textContent = s || '';
         return d.innerHTML;
+    }
+
+    function _showCtxMenu(x, y, entry) {
+        _closeCtxMenu();
+        const menu = document.createElement('div');
+        menu.className = 'ctx-menu';
+        menu.style.left = x + 'px';
+        menu.style.top  = y + 'px';
+        menu.innerHTML = `
+            <div class="ctx-menu-item" data-action="injector">Send to Injector</div>
+        `;
+        menu.querySelector('[data-action="injector"]').addEventListener('click', () => {
+            if (InjectorUI && InjectorUI.populateFromLog) {
+                InjectorUI.populateFromLog({
+                    method: entry.method,
+                    url: entry.url,
+                    request_headers: entry.headers || {},
+                    request_body: entry.body || '',
+                });
+            }
+            document.querySelectorAll('#tab-bar .tab').forEach(t =>
+                t.classList.toggle('active', t.dataset.tab === 'injector'));
+            document.querySelectorAll('.tab-pane').forEach(p =>
+                p.classList.toggle('active', p.dataset.tab === 'injector'));
+            _closeCtxMenu();
+        });
+        document.body.appendChild(menu);
+        const dismiss = () => { _closeCtxMenu(); document.removeEventListener('click', dismiss); };
+        setTimeout(() => document.addEventListener('click', dismiss), 0);
+    }
+
+    function _closeCtxMenu() {
+        document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
     }
 
     return { init, addRequest, clearAll, loadHistory };

