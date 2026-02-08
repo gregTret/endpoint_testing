@@ -31,6 +31,15 @@ window.LogViewer = (() => {
         renderList();
     }
 
+    /** Batch-add entries without re-rendering on each one */
+    function addEntries(entries) {
+        for (const e of entries) {
+            logs.unshift(e);
+        }
+        if (logs.length > 2000) logs.length = 2000;
+        renderList();
+    }
+
     function renderList() {
         const search = (searchEl.value || '').toLowerCase();
         const method = methodFilterEl.value;
@@ -63,6 +72,12 @@ window.LogViewer = (() => {
                 userClosedDetail = false;
                 detailPanel.classList.remove('collapsed');
                 selectEntry(Number(el.dataset.id));
+            });
+            el.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                const entry = logs.find(l => l.id === Number(el.dataset.id));
+                if (!entry) return;
+                _showCtxMenu(e.clientX, e.clientY, entry);
             });
         });
     }
@@ -142,6 +157,48 @@ window.LogViewer = (() => {
             .join('\n');
     }
 
+    /** Build a portable request object from a log entry */
+    function _buildReq(entry) {
+        return {
+            method: entry.method,
+            url: entry.url,
+            headers: entry.request_headers || {},
+            body: entry.request_body || '',
+        };
+    }
+
+    function _showCtxMenu(x, y, entry) {
+        _closeCtxMenu();
+        const menu = document.createElement('div');
+        menu.className = 'ctx-menu';
+        menu.style.left = x + 'px';
+        menu.style.top  = y + 'px';
+        menu.innerHTML = `
+            <div class="ctx-menu-item" data-action="repeater">Send to Repeater</div>
+            <div class="ctx-menu-item" data-action="injector">Send to Injector</div>
+        `;
+        menu.querySelector('[data-action="repeater"]').addEventListener('click', () => {
+            Repeater.addRequest(_buildReq(entry));
+            _closeCtxMenu();
+        });
+        menu.querySelector('[data-action="injector"]').addEventListener('click', () => {
+            if (InjectorUI && InjectorUI.populateFromLog) InjectorUI.populateFromLog(entry);
+            // switch to injector tab
+            document.querySelectorAll('#tab-bar .tab').forEach(t =>
+                t.classList.toggle('active', t.dataset.tab === 'injector'));
+            document.querySelectorAll('.tab-pane').forEach(p =>
+                p.classList.toggle('active', p.dataset.tab === 'injector'));
+            _closeCtxMenu();
+        });
+        document.body.appendChild(menu);
+        const dismiss = () => { _closeCtxMenu(); document.removeEventListener('click', dismiss); };
+        setTimeout(() => document.addEventListener('click', dismiss), 0);
+    }
+
+    function _closeCtxMenu() {
+        document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
+    }
+
     /** Reset all logs (used on workspace switch) */
     function clear() {
         logs = [];
@@ -150,5 +207,5 @@ window.LogViewer = (() => {
         closeDetail();
     }
 
-    return { init, addEntry, getSelected, clear };
+    return { init, addEntry, addEntries, getSelected, clear };
 })();

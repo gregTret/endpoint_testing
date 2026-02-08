@@ -314,6 +314,20 @@ window.InjectorUI = (() => {
                 if (open) { expandedSet.delete(key); } else { expandedSet.add(key); }
             });
         });
+
+        // Right-click context menu on scan entries
+        resultsEl.querySelectorAll('.scan-entry').forEach(el => {
+            el.addEventListener('contextmenu', (ev) => {
+                ev.preventDefault();
+                const key = el.dataset.key;
+                const r = filtered.find((_, i) => {
+                    const k = _.id || `${_.payload}_${_.original_param}_${i}`;
+                    return String(k) === key;
+                });
+                if (!r) return;
+                _showScanCtxMenu(ev.clientX, ev.clientY, r);
+            });
+        });
     }
 
     // ── Key Picker ─────────────────────────────────────────────
@@ -408,11 +422,48 @@ window.InjectorUI = (() => {
         }
     }
 
+    // ── Context menu on scan results ──────────────────────
+    function _showScanCtxMenu(x, y, r) {
+        _closeScanCtxMenu();
+        const menu = document.createElement('div');
+        menu.className = 'ctx-menu';
+        menu.style.left = x + 'px';
+        menu.style.top  = y + 'px';
+        menu.innerHTML = `
+            <div class="ctx-menu-item" data-action="repeater">Send to Repeater</div>
+        `;
+        menu.querySelector('[data-action="repeater"]').addEventListener('click', () => {
+            let hdrs = {};
+            try { hdrs = typeof r.request_headers === 'string' ? JSON.parse(r.request_headers) : (r.request_headers || {}); } catch (_) {}
+            Repeater.addRequest({
+                method: methodEl.value || 'POST',
+                url: r.target_url || '',
+                headers: hdrs,
+                body: r.request_body || '',
+            });
+            _closeScanCtxMenu();
+        });
+        document.body.appendChild(menu);
+        const dismiss = () => { _closeScanCtxMenu(); document.removeEventListener('click', dismiss); };
+        setTimeout(() => document.addEventListener('click', dismiss), 0);
+    }
+
+    function _closeScanCtxMenu() {
+        document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
+    }
+
     function esc(s) {
         const d = document.createElement('div');
         d.textContent = s || '';
         return d.innerHTML;
     }
 
-    return { init, loadFromLog, loadHistory };
+    async function clearHistory() {
+        try { await fetch(`${API}/scan/history`, { method: 'DELETE' }); } catch (_) {}
+        lastResults = [];
+        expandedSet.clear();
+        resultsEl.innerHTML = '<p class="placeholder-text">No results yet</p>';
+    }
+
+    return { init, loadFromLog, populateFromLog: loadFromLog, loadHistory, clearHistory };
 })();

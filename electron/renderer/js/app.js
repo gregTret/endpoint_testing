@@ -48,6 +48,7 @@
         SiteMap.init();
         Credentials.init();
         InjectorUI.init();
+        Repeater.init();
 
         // Tab switching
         document.querySelectorAll('#tab-bar .tab').forEach(tab => {
@@ -68,17 +69,23 @@
         // URL change from embedded browser
         window.electronAPI.onUrlChanged((url) => {
             document.getElementById('url-input').value = url;
+            Workspace.saveLastUrl(url);
         });
 
-        // Context menu: right-click a log entry to load into injector
-        document.getElementById('log-list').addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-            const entry = LogViewer.getSelected();
-            if (entry) {
-                InjectorUI.loadFromLog(entry);
-                switchTab('injector');
-            }
+        // Right-click context menus on log entries are handled inside log-viewer.js
+
+        // Settings — clear buttons
+        document.getElementById('btn-clear-injector-history').addEventListener('click', () => {
+            if (!confirm('Clear all injector scan history?')) return;
+            if (InjectorUI.clearHistory) InjectorUI.clearHistory();
         });
+        document.getElementById('btn-clear-repeater-history').addEventListener('click', () => {
+            if (!confirm('Clear all repeater history?')) return;
+            if (Repeater.clearAll) Repeater.clearAll();
+        });
+
+        // ── Panel resize drag handle ────────────────────────────────
+        initPanelResize();
     }
 
     /** Clear current UI data and reload from the active workspace */
@@ -125,16 +132,19 @@
     // ── Existing logs ──────────────────────────────────────────────
 
     async function loadExistingLogs() {
+        const logList = document.getElementById('log-list');
+        if (logList) logList.innerHTML = '<p class="placeholder-text" style="padding:10px">Loading logs...</p>';
+
         try {
             const res = await fetch(`${API}/logs?limit=500`);
             const logs = await res.json();
-            // They come newest-first; add in reverse so oldest renders first
-            for (let i = logs.length - 1; i >= 0; i--) {
-                LogViewer.addEntry(logs[i]);
-                SiteMap.addUrl(logs[i].url);
-            }
+            // Batch-add: reverse so oldest is first, render once at the end
+            const reversed = logs.slice().reverse();
+            LogViewer.addEntries(reversed);
+            SiteMap.addUrls(reversed.map(l => l.url));
         } catch (_) {
             // Backend might not be up yet — that's fine, WS will stream new ones
+            if (logList) logList.innerHTML = '';
         }
     }
 
@@ -153,6 +163,41 @@
         });
         document.querySelectorAll('.tab-pane').forEach(p => {
             p.classList.toggle('active', p.dataset.tab === tabName);
+        });
+    }
+
+    // ── Panel resize ────────────────────────────────────────────────
+
+    function initPanelResize() {
+        const handle = document.getElementById('panel-resize-handle');
+        const panel  = document.getElementById('tool-panel');
+        if (!handle || !panel) return;
+
+        let dragging = false;
+
+        handle.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            dragging = true;
+            handle.classList.add('dragging');
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!dragging) return;
+            const newWidth = Math.max(250, Math.min(e.clientX, window.innerWidth - 200));
+            document.documentElement.style.setProperty('--panel-width', newWidth + 'px');
+            panel.style.width = newWidth + 'px';
+            handle.style.left = newWidth + 'px';
+            window.electronAPI.setPanelWidth(newWidth);
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (!dragging) return;
+            dragging = false;
+            handle.classList.remove('dragging');
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
         });
     }
 })();

@@ -599,6 +599,35 @@ html, body {
     color: var(--text-dim);
 }
 
+/* ── Settings ─────────────────────────────────────────────────────── */
+.settings-scroll { padding: 10px; }
+
+.settings-section {
+    margin-bottom: 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px;
+    background: var(--surface2);
+}
+
+.settings-section-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--accent);
+    margin-bottom: 8px;
+}
+
+.settings-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.settings-actions .btn-small {
+    flex: 0 0 auto;
+}
+
 /* ── Credentials ──────────────────────────────────────────────────── */
 .cred-form {
     padding: 10px;
@@ -826,6 +855,97 @@ html, body {
     color: var(--accent);
     padding: 0 8px;
     white-space: nowrap;
+}
+
+/* ── Repeater ─────────────────────────────────────────────────────── */
+.repeater-layout {
+    display: flex;
+    height: 100%;
+}
+
+.repeater-list-panel {
+    width: 180px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+}
+.repeater-list-panel #repeater-list { flex: 1; }
+
+.repeater-entry {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 10px;
+    transition: background .1s;
+    gap: 4px;
+}
+.repeater-entry:hover { background: var(--surface2); }
+.repeater-entry.selected { background: var(--accent-dim); color: #fff; }
+
+.repeater-entry-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+}
+
+.repeater-remove {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 14px;
+    cursor: pointer;
+    padding: 0 2px;
+    line-height: 1;
+    flex-shrink: 0;
+}
+.repeater-remove:hover { color: var(--danger); }
+
+.repeater-editor-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 10px;
+    gap: 6px;
+    overflow: hidden;
+}
+.repeater-editor-panel .form-group { margin-bottom: 0; }
+.repeater-editor-panel textarea { resize: vertical; }
+.repeater-editor-panel #repeater-response {
+    flex: 1;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg);
+    padding: 8px;
+    font-family: var(--mono);
+    font-size: 11px;
+}
+
+.repeater-response-block {
+    font-family: var(--mono);
+    font-size: 11px;
+}
+
+/* ── Panel Resize Handle ──────────────────────────────────────────── */
+#panel-resize-handle {
+    position: fixed;
+    top: var(--nav-height);
+    bottom: 0;
+    left: var(--panel-width);
+    width: 6px;
+    cursor: col-resize;
+    z-index: 60;
+    background: var(--border);
+    transition: background .15s;
+}
+#panel-resize-handle:hover,
+#panel-resize-handle.dragging {
+    background: var(--accent);
 }
 
 /* ── Utility ──────────────────────────────────────────────────────── */

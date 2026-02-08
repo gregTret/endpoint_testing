@@ -5,6 +5,7 @@ window.Workspace = (() => {
     const API = 'http://127.0.0.1:8000/api';
     let launcherEl, listEl, nameInput, createBtn;
     let onSelectCallback = null;
+    let activeWsId = null;
 
     function init(onSelect) {
         onSelectCallback = onSelect;
@@ -104,8 +105,11 @@ window.Workspace = (() => {
         document.getElementById('tool-panel').classList.remove('hidden');
         document.getElementById('ws-active-name').textContent = name;
 
-        // Create a new BrowserView with this workspace's session partition
-        window.electronAPI.showBrowser(id);
+        activeWsId = id;
+
+        // Restore last URL for this workspace (or default to example.com)
+        const lastUrl = localStorage.getItem(`ws_lastUrl_${id}`) || '';
+        window.electronAPI.showBrowser(id, lastUrl);
 
         if (onSelectCallback) onSelectCallback(id, name);
     }
@@ -118,7 +122,12 @@ window.Workspace = (() => {
     }
 
     /** Show the launcher again (called by "Switch Workspace" button) */
-    function show() {
+    async function show() {
+        // Save current URL before detaching
+        try {
+            const url = await window.electronAPI.getCurrentUrl();
+            saveLastUrl(url);
+        } catch (_) {}
         // Detach the embedded browser so the launcher is fully visible
         window.electronAPI.hideBrowser();
         launcherEl.classList.remove('hidden');
@@ -141,5 +150,12 @@ window.Workspace = (() => {
         return d.innerHTML;
     }
 
-    return { init, show };
+    /** Save the current browser URL for the active workspace */
+    function saveLastUrl(url) {
+        if (activeWsId && url) localStorage.setItem(`ws_lastUrl_${activeWsId}`, url);
+    }
+
+    function getActiveId() { return activeWsId; }
+
+    return { init, show, saveLastUrl, getActiveId };
 })();

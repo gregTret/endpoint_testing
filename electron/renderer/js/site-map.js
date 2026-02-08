@@ -19,6 +19,11 @@ window.SiteMap = (() => {
 
     /** Add a URL to the tree (called for every new request log) */
     function addUrl(urlStr) {
+        _insertUrl(urlStr);
+        renderTree();
+    }
+
+    function _insertUrl(urlStr) {
         try {
             const u = new URL(urlStr);
             const host = u.host;
@@ -32,6 +37,11 @@ window.SiteMap = (() => {
                 node = node[part]._children;
             }
         } catch (_) {}
+    }
+
+    /** Batch-add URLs without re-rendering on each one */
+    function addUrls(urls) {
+        for (const u of urls) _insertUrl(u);
         renderTree();
     }
 
@@ -191,7 +201,7 @@ window.SiteMap = (() => {
             { label: 'Open in Browser', action: () => { window.electronAPI.navigate(url); document.getElementById('url-input').value = url; } },
             { label: 'Copy URL', action: () => navigator.clipboard.writeText(url) },
             { label: 'Scan with Injector', action: () => { InjectorUI.loadFromLog({ url, method: 'GET', request_headers: {}, request_body: '' }); switchTab('injector'); } },
-            { label: 'Add Credentials for Site', action: () => { Credentials.openWithSite(host || new URL(url).host); switchTab('creds'); } },
+            { label: 'Add Credentials for Site', action: () => { Credentials.openWithSite(host || new URL(url).host); switchTab('settings'); } },
             { label: 'Start Crawl from Here', action: () => { crawlBtn.disabled = true; stopBtn.disabled = false; statusEl.textContent = 'Starting...'; fetch(`${API}/crawl?url=${encodeURIComponent(url)}&max_depth=5&max_pages=100`, { method: 'POST' }).then(pollCrawlStatus); } },
             { label: 'Remove from Site Map', cls: 'ctx-menu-item--danger', action: () => { removeNode(host || new URL(url).host, pathParts); } },
         ];
@@ -246,5 +256,5 @@ window.SiteMap = (() => {
         renderTree();
     }
 
-    return { init, addUrl, clear };
+    return { init, addUrl, addUrls, clear };
 })();

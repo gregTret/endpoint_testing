@@ -53,7 +53,8 @@
         <button class="tab active" data-tab="logs">Logs</button>
         <button class="tab" data-tab="sitemap">Site Map</button>
         <button class="tab" data-tab="injector">Injector</button>
-        <button class="tab" data-tab="creds">Creds</button>
+        <button class="tab" data-tab="repeater">Repeater</button>
+        <button class="tab" data-tab="settings">Settings</button>
     </div>
 
     <!-- Tab content -->
@@ -145,54 +146,106 @@
             <div id="scan-results" class="scrollable"></div>
         </div>
 
+        <!-- Repeater -->
+        <div class="tab-pane" data-tab="repeater">
+            <div class="repeater-layout">
+                <div class="repeater-list-panel">
+                    <div class="pane-controls">
+                        <span style="font-weight:600;font-size:12px">History</span>
+                        <button id="btn-repeater-clear" class="btn-small danger">Clear All</button>
+                    </div>
+                    <div id="repeater-list" class="scrollable"></div>
+                </div>
+                <div class="repeater-editor-panel">
+                    <div class="form-group">
+                        <div class="form-row" style="gap:6px">
+                            <select id="repeater-method" style="flex:0 0 80px">
+                                <option>GET</option><option>POST</option>
+                                <option>PUT</option><option>DELETE</option>
+                                <option>PATCH</option>
+                            </select>
+                            <input type="text" id="repeater-url" placeholder="https://..." style="flex:1">
+                            <button id="btn-repeater-send" class="btn-primary" style="flex:0 0 70px;width:auto">Send</button>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Headers (JSON)</label>
+                        <textarea id="repeater-headers" rows="3" placeholder='{"Authorization": "Bearer ..."}'></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Body</label>
+                        <textarea id="repeater-body" rows="4" placeholder="Request body..."></textarea>
+                    </div>
+                    <div id="repeater-response" class="scrollable"></div>
+                </div>
+            </div>
+        </div>
+
         <!-- Credentials -->
-        <div class="tab-pane" data-tab="creds">
-            <div class="pane-controls">
-                <button id="btn-add-cred">+ Add</button>
-                <input type="text" id="cred-search" placeholder="Filter by site...">
+        <div class="tab-pane" data-tab="settings">
+            <div class="settings-scroll scrollable">
+
+                <!-- Data Management -->
+                <div class="settings-section">
+                    <div class="settings-section-title">Data Management</div>
+                    <div class="settings-actions">
+                        <button id="btn-clear-injector-history" class="btn-small danger">Clear Injector History</button>
+                        <button id="btn-clear-repeater-history" class="btn-small danger">Clear Repeater History</button>
+                    </div>
+                </div>
+
+                <!-- Credentials -->
+                <div class="settings-section">
+                    <div class="settings-section-title">Credentials</div>
+                    <div class="pane-controls" style="border-bottom:none;padding:0 0 8px">
+                        <button id="btn-add-cred">+ Add</button>
+                        <input type="text" id="cred-search" placeholder="Filter by site...">
+                    </div>
+                    <div id="cred-form" class="cred-form hidden">
+                        <input type="hidden" id="cred-edit-id" value="">
+                        <div class="form-row">
+                            <div class="form-group half">
+                                <label>Site / Domain</label>
+                                <input type="text" id="cred-site" placeholder="example.com">
+                            </div>
+                            <div class="form-group half">
+                                <label>Auth Type</label>
+                                <select id="cred-auth-type">
+                                    <option value="basic">Basic (user/pass)</option>
+                                    <option value="bearer">Bearer Token</option>
+                                    <option value="api_key">API Key</option>
+                                    <option value="cookie">Cookie</option>
+                                    <option value="other">Other</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group half">
+                                <label>Username</label>
+                                <input type="text" id="cred-username" placeholder="admin">
+                            </div>
+                            <div class="form-group half">
+                                <label>Password</label>
+                                <input type="password" id="cred-password" placeholder="********">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>Token / API Key</label>
+                            <input type="text" id="cred-token" placeholder="Bearer eyJ...">
+                        </div>
+                        <div class="form-group">
+                            <label>Notes</label>
+                            <input type="text" id="cred-notes" placeholder="Optional notes">
+                        </div>
+                        <div class="form-row">
+                            <button id="btn-save-cred" class="btn-primary" style="flex:1">Save</button>
+                            <button id="btn-cancel-cred" class="btn-small" style="flex:0">Cancel</button>
+                        </div>
+                    </div>
+                    <div id="cred-list"></div>
+                </div>
+
             </div>
-            <div id="cred-form" class="cred-form hidden">
-                <input type="hidden" id="cred-edit-id" value="">
-                <div class="form-row">
-                    <div class="form-group half">
-                        <label>Site / Domain</label>
-                        <input type="text" id="cred-site" placeholder="example.com">
-                    </div>
-                    <div class="form-group half">
-                        <label>Auth Type</label>
-                        <select id="cred-auth-type">
-                            <option value="basic">Basic (user/pass)</option>
-                            <option value="bearer">Bearer Token</option>
-                            <option value="api_key">API Key</option>
-                            <option value="cookie">Cookie</option>
-                            <option value="other">Other</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group half">
-                        <label>Username</label>
-                        <input type="text" id="cred-username" placeholder="admin">
-                    </div>
-                    <div class="form-group half">
-                        <label>Password</label>
-                        <input type="password" id="cred-password" placeholder="********">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>Token / API Key</label>
-                    <input type="text" id="cred-token" placeholder="Bearer eyJ...">
-                </div>
-                <div class="form-group">
-                    <label>Notes</label>
-                    <input type="text" id="cred-notes" placeholder="Optional notes">
-                </div>
-                <div class="form-row">
-                    <button id="btn-save-cred" class="btn-primary" style="flex:1">Save</button>
-                    <button id="btn-cancel-cred" class="btn-small" style="flex:0">Cancel</button>
-                </div>
-            </div>
-            <div id="cred-list" class="scrollable"></div>
         </div>
     </div>
 
@@ -208,10 +261,14 @@
     </div>
 </div>
 
+<!-- Drag handle to resize tool panel / browser split -->
+<div id="panel-resize-handle"></div>
+
 <script src="js/workspace.js"></script>
 <script src="js/log-viewer.js"></script>
 <script src="js/site-map.js"></script>
 <script src="js/injector-ui.js"></script>
+<script src="js/repeater.js"></script>
 <script src="js/credentials.js"></script>
 <script src="js/app.js"></script>
 </body>

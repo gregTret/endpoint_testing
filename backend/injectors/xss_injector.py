@@ -96,6 +96,20 @@ class XSSInjector(BaseInjector):
         canary_in_baseline = self._CANARY in baseline_body
 
         if not canary_in_response:
+            # Check for potential stored XSS: the server must have accepted
+            # the payload the same way it accepted the baseline (same status,
+            # similar response).  If the response differs significantly from
+            # baseline, the server rejected or errored — not stored XSS.
+            if (
+                test_status == 200
+                and baseline.get("status_code") == 200
+                and body == baseline_body
+            ):
+                return VulnerabilityReport(
+                    is_vulnerable=True,
+                    confidence="low",
+                    details="Payload accepted by server (response identical to baseline) — potential stored XSS. Verify by loading the data back.",
+                )
             return VulnerabilityReport(
                 is_vulnerable=False,
                 confidence="low",

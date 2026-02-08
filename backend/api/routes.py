@@ -13,6 +13,7 @@ from storage.db import (
     save_scan_result,
     get_scan_results,
     get_scan_results_by_workspace,
+    delete_scan_history_by_workspace,
     export_session,
     save_credential,
     get_credentials,
@@ -300,6 +301,13 @@ async def scan_results(session_id: str = "default", limit: int = 200):
 async def scan_history(limit: int = 500):
     """Return all scan results for the active workspace (persistent history)."""
     return await get_scan_results_by_workspace(_active_workspace, limit)
+
+
+@router.delete("/scan/history")
+async def clear_scan_history():
+    """Delete all scan results for the active workspace."""
+    await delete_scan_history_by_workspace(_active_workspace)
+    return {"ok": True}
 
 
 # ──────────────────────────── Session / Export ────────────────────────────

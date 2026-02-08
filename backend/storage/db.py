@@ -324,6 +324,15 @@ async def get_scan_results_by_workspace(
         return [dict(row) for row in rows]
 
 
+async def delete_scan_history_by_workspace(workspace_id: str = "default"):
+    """Delete all scan results for a workspace."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM scan_results WHERE workspace_id = ?", (workspace_id,)
+        )
+        await db.commit()
+
+
 async def export_session(session_id: str = "default") -> dict:
     """Export all data for a session."""
     logs = await get_request_logs(session_id, limit=10000)

@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     refresh:       ()    => ipcRenderer.send('refresh'),
     getCurrentUrl: ()    => ipcRenderer.invoke('get-current-url'),
     onUrlChanged:  (cb)  => ipcRenderer.on('url-changed', (_e, url) => cb(url)),
-    showBrowser:   (wsId) => ipcRenderer.send('show-browser', wsId),
+    showBrowser:   (wsId, lastUrl) => ipcRenderer.send('show-browser', wsId, lastUrl),
     hideBrowser:   ()    => ipcRenderer.send('hide-browser'),
+    setPanelWidth: (w)   => ipcRenderer.send('set-panel-width', w),
 });
