@@ -142,7 +142,7 @@ window.InjectorUI = (() => {
             headers,
             body: bodyEl.value,
             injection_points: points.length ? points : ['params'],
-            target_keys: targetKeys,
+            target_keys: targetKeys.length ? targetKeys : null,
             timeout: 10.0,
         };
 
