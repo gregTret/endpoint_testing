@@ -146,6 +146,24 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS idx_repeater_workspace ON repeater_history(workspace_id)"
         )
 
+        # ── Payload config (per-workspace injector payload overrides) ──
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS payload_config (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workspace_id TEXT NOT NULL,
+                injector_type TEXT NOT NULL,
+                payload_text TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                is_quick INTEGER NOT NULL DEFAULT 0,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(workspace_id, injector_type, payload_text)
+            )
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_payload_config_ws_type
+                ON payload_config(workspace_id, injector_type)
+        """)
+
         await db.commit()
 
 
@@ -199,6 +217,7 @@ async def delete_workspace(workspace_id: str) -> None:
         await db.execute("DELETE FROM credentials WHERE workspace_id = ?", (workspace_id,))
         await db.execute("DELETE FROM sitemap_urls WHERE workspace_id = ?", (workspace_id,))
         await db.execute("DELETE FROM repeater_history WHERE workspace_id = ?", (workspace_id,))
+        await db.execute("DELETE FROM payload_config WHERE workspace_id = ?", (workspace_id,))
         await db.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
         await db.commit()
 
@@ -553,6 +572,56 @@ async def delete_repeater_entry(entry_id: int):
     """Delete a single repeater entry by ID."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM repeater_history WHERE id = ?", (entry_id,))
+        await db.commit()
+
+
+# ── Payload Config ────────────────────────────────────────────────
+
+
+async def get_payload_config(workspace_id: str, injector_type: str) -> list[dict]:
+    """Return payload overrides for a workspace+injector, or empty list if none."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT payload_text, enabled, is_quick, sort_order FROM payload_config "
+            "WHERE workspace_id = ? AND injector_type = ? ORDER BY sort_order",
+            (workspace_id, injector_type),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+
+async def save_payload_config(workspace_id: str, injector_type: str, payloads: list[dict]):
+    """Replace all payload overrides for a workspace+injector in one transaction."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM payload_config WHERE workspace_id = ? AND injector_type = ?",
+            (workspace_id, injector_type),
+        )
+        await db.executemany(
+            "INSERT INTO payload_config (workspace_id, injector_type, payload_text, enabled, is_quick, sort_order) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    workspace_id,
+                    injector_type,
+                    p["payload_text"],
+                    1 if p.get("enabled", True) else 0,
+                    1 if p.get("is_quick", False) else 0,
+                    p.get("sort_order", i),
+                )
+                for i, p in enumerate(payloads)
+            ],
+        )
+        await db.commit()
+
+
+async def delete_payload_config(workspace_id: str, injector_type: str):
+    """Remove all payload overrides for a workspace+injector (revert to defaults)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM payload_config WHERE workspace_id = ? AND injector_type = ?",
+            (workspace_id, injector_type),
+        )
         await db.commit()
 
 

@@ -33,6 +33,9 @@ from storage.db import (
     delete_workspace,
     update_workspace_opened,
     rename_workspace,
+    get_payload_config,
+    save_payload_config,
+    delete_payload_config,
 )
 from injectors.sql_injector import SQLInjector
 from injectors.aql_injector import AQLInjector
@@ -223,6 +226,72 @@ async def list_injectors():
     ]
 
 
+# ── Payload Config (per-workspace injector payloads) ────────────────
+
+
+_PAYLOAD_EXCLUDED_TYPES = frozenset({"jwt", "quick"})
+
+
+@router.get("/injectors/{injector_type}/payloads")
+async def get_injector_payloads(injector_type: str):
+    if injector_type in _PAYLOAD_EXCLUDED_TYPES:
+        return JSONResponse(status_code=400, content={"error": f"Payload config not supported for '{injector_type}'"})
+    if injector_type not in INJECTORS:
+        return JSONResponse(status_code=404, content={"error": f"Unknown injector: {injector_type}"})
+
+    overrides = await get_payload_config(_active_workspace, injector_type)
+    if overrides:
+        return {
+            "injector_type": injector_type,
+            "is_customized": True,
+            "payloads": overrides,
+        }
+
+    # Return defaults from the injector class
+    injector = INJECTORS[injector_type]()
+    context = {"url": "", "method": "GET", "params": {}}
+    full = injector.generate_payloads(context)
+    quick = injector.generate_quick_payloads(context)
+    quick_set = set(quick)
+    payloads = [
+        {
+            "payload_text": p,
+            "enabled": True,
+            "is_quick": p in quick_set,
+            "sort_order": i,
+        }
+        for i, p in enumerate(full)
+    ]
+    return {
+        "injector_type": injector_type,
+        "is_customized": False,
+        "payloads": payloads,
+    }
+
+
+@router.put("/injectors/{injector_type}/payloads")
+async def put_injector_payloads(injector_type: str, body: dict):
+    if injector_type in _PAYLOAD_EXCLUDED_TYPES:
+        return JSONResponse(status_code=400, content={"error": f"Payload config not supported for '{injector_type}'"})
+    if injector_type not in INJECTORS:
+        return JSONResponse(status_code=404, content={"error": f"Unknown injector: {injector_type}"})
+
+    payloads = body.get("payloads", [])
+    await save_payload_config(_active_workspace, injector_type, payloads)
+    return {"ok": True}
+
+
+@router.delete("/injectors/{injector_type}/payloads")
+async def reset_injector_payloads(injector_type: str):
+    if injector_type in _PAYLOAD_EXCLUDED_TYPES:
+        return JSONResponse(status_code=400, content={"error": f"Payload config not supported for '{injector_type}'"})
+    if injector_type not in INJECTORS:
+        return JSONResponse(status_code=404, content={"error": f"Unknown injector: {injector_type}"})
+
+    await delete_payload_config(_active_workspace, injector_type)
+    return {"ok": True}
+
+
 @router.post("/scan")
 async def start_scan(config: ScanConfig, background_tasks: BackgroundTasks):
     global _scan_status
@@ -239,9 +308,16 @@ async def start_scan(config: ScanConfig, background_tasks: BackgroundTasks):
         )
 
     if config.injector_type == "quick":
-        injector = injector_cls(injector_registry=INJECTORS)
+        injector = injector_cls(injector_registry=INJECTORS, workspace_id=_active_workspace)
     else:
         injector = injector_cls()
+
+    # Apply per-workspace payload overrides
+    if config.injector_type not in _PAYLOAD_EXCLUDED_TYPES:
+        overrides = await get_payload_config(_active_workspace, config.injector_type)
+        if overrides:
+            injector._payload_override = [r["payload_text"] for r in overrides if r["enabled"]]
+
     points = config.injection_points or ["params"]
     scan_id = uuid.uuid4().hex[:12]
     _scan_status = {

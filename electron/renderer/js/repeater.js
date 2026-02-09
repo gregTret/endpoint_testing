@@ -22,6 +22,16 @@ window.Repeater = (() => {
 
     /** Load persisted history from backend */
     function loadHistory() {
+        // Clear stale state immediately so previous workspace data doesn't linger
+        history = [];
+        selectedIdx = null;
+        if (urlEl) urlEl.value = '';
+        if (methodEl) methodEl.value = 'GET';
+        if (headersEl) headersEl.value = '';
+        if (bodyEl) bodyEl.value = '';
+        if (responseEl) responseEl.innerHTML = '';
+        renderList();
+
         fetch(`${API}/repeater/history`)
             .then(r => r.json())
             .then(rows => {

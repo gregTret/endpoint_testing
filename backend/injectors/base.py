@@ -4,7 +4,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from urllib.parse import urlparse, parse_qs, urlunparse
+from urllib.parse import urlparse, parse_qs, urlunparse, quote
 
 import httpx
 
@@ -62,6 +62,7 @@ class BaseInjector(ABC):
 
     name: str = "base"
     description: str = ""
+    _payload_override: list[str] | None = None
 
     def __init__(self) -> None:
         self.results: list[ScanResult] = []
@@ -80,6 +81,12 @@ class BaseInjector(ABC):
         Default: first 3 payloads from the full set.
         """
         return self.generate_payloads(context)[:3]
+
+    def get_payloads(self, context: dict) -> list[str]:
+        """Return payloads — uses override list if set, otherwise generates defaults."""
+        if self._payload_override is not None:
+            return self._payload_override
+        return self.generate_payloads(context)
 
     @abstractmethod
     def analyze_response(
@@ -125,13 +132,13 @@ class BaseInjector(ABC):
         url, params = _normalize_url_params(url, params)
 
         baseline = await self._send_request(url, method, params, headers, body, timeout)
-        payloads = self.generate_payloads(
+        payloads = self.get_payloads(
             {"url": url, "method": method, "params": params},
         )
 
         # Build the list of (injection_point, param_name) targets so
         # we test *every* param, header, and JSON body field individually.
-        targets = _build_targets(injection_points, params, headers, body, target_keys)
+        targets = _build_targets(injection_points, params, headers, body, target_keys, url)
         total = len(payloads) * len(targets)
 
         proxy_url = f"http://{PROXY_HOST}:{PROXY_PORT}"
@@ -184,10 +191,16 @@ class BaseInjector(ABC):
         }
         mod_headers.update(_SCAN_MARKER)
         mod_body = body
+        mod_url = url
         send_json = False
 
         if injection_point == "params" and target_key in mod_params:
             mod_params[target_key] = payload
+        elif injection_point == "paths":
+            # Replace a specific path segment with the payload
+            # target_key is "/<segment>" — strip leading slash to get the original value
+            orig_segment = target_key.lstrip("/")
+            mod_url = _replace_path_segment(url, orig_segment, payload)
         elif injection_point == "headers" and target_key in mod_headers:
             mod_headers[target_key] = payload
         elif injection_point == "body":
@@ -206,12 +219,12 @@ class BaseInjector(ABC):
         start = time.time()
         try:
             if method.upper() == "GET":
-                resp = await client.get(url, params=mod_params, headers=mod_headers)
+                resp = await client.get(mod_url, params=mod_params, headers=mod_headers)
             else:
                 # Always use content= (raw body) so the Content-Type from
                 # captured headers is used as-is — no conflicts with json=
                 resp = await client.request(
-                    method, url,
+                    method, mod_url,
                     params=mod_params,
                     headers=mod_headers,
                     content=mod_body.encode("utf-8") if mod_body else b"",
@@ -297,9 +310,23 @@ class BaseInjector(ABC):
             return {"status_code": 0, "body": "", "response_time_ms": 0, "headers": {}}
 
 
+def _replace_path_segment(url: str, original_segment: str, payload: str) -> str:
+    """Replace the first occurrence of *original_segment* in the URL path with *payload*."""
+    parsed = urlparse(url)
+    segments = parsed.path.split("/")
+    replaced = False
+    for i, seg in enumerate(segments):
+        if seg == original_segment and not replaced:
+            segments[i] = quote(payload, safe="")
+            replaced = True
+    new_path = "/".join(segments)
+    return urlunparse(parsed._replace(path=new_path))
+
+
 def _build_targets(
     injection_points: list[str], params: dict, headers: dict,
     body: str = "", target_keys: list[str] | None = None,
+    url: str = "",
 ) -> list[tuple[str, str]]:
     """
     Expand injection points into (point, key) pairs.
@@ -321,6 +348,15 @@ def _build_targets(
                         targets.append(("params", k))
             else:
                 targets.append(("params", "q"))
+        elif point == "paths":
+            # URL path segments — e.g. /api/users/123 → ["api", "users", "123"]
+            parsed = urlparse(url) if url else None
+            if parsed and parsed.path:
+                segments = [s for s in parsed.path.split("/") if s]
+                for i, seg in enumerate(segments):
+                    key = f"/{seg}"
+                    if allowed is None or key in allowed:
+                        targets.append(("paths", key))
         elif point == "headers":
             for k in headers:
                 if k.lower() not in _SKIP_HEADERS:

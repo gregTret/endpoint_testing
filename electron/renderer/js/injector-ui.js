@@ -53,7 +53,8 @@ window.InjectorUI = (() => {
                 p.classList.toggle('active', p.dataset.tab === 'analytics'));
         });
 
-        // Refresh key picker whenever params, headers, or body change
+        // Refresh key picker whenever URL, params, headers, or body change
+        urlEl.addEventListener('input', refreshKeyPicker);
         paramsEl.addEventListener('input', refreshKeyPicker);
         headersEl.addEventListener('input', refreshKeyPicker);
         bodyEl.addEventListener('input', refreshKeyPicker);
@@ -69,15 +70,30 @@ window.InjectorUI = (() => {
     async function loadHistory() {
         textFilter = '';
         if (textFilterEl) textFilterEl.value = '';
+
+        // Always reset state so stale data from previous workspace is cleared
+        lastResults = [];
+        activeFilter = 'all';
+        expandedSet.clear();
+
+        // Clear form fields
+        if (urlEl) urlEl.value = '';
+        if (methodEl) methodEl.value = 'GET';
+        if (paramsEl) paramsEl.value = '';
+        if (headersEl) headersEl.value = '';
+        if (bodyEl) bodyEl.value = '';
+        if (keyPickerGroup) keyPickerGroup.style.display = 'none';
+        if (keyPickerEl) keyPickerEl.innerHTML = '';
+        if (scanToolbar) scanToolbar.classList.add('hidden');
+
         try {
             const res = await fetch(`${API}/scan/history`);
             const data = await res.json();
-            if (data.length) {
-                lastResults = data;
-                activeFilter = 'all';
-                renderResults(lastResults);
-            }
-        } catch (_) {}
+            lastResults = data;
+            renderResults(lastResults);
+        } catch (_) {
+            renderResults([]);
+        }
     }
 
     /** Send the request exactly as shown in the form — no injection */
@@ -388,6 +404,15 @@ window.InjectorUI = (() => {
 
         const keys = [];
 
+        // Paths — only if "paths" checked
+        if (active.has('paths') && urlEl.value) {
+            try {
+                const u = new URL(urlEl.value);
+                const segments = u.pathname.split('/').filter(Boolean);
+                segments.forEach(seg => keys.push({ source: 'path', key: '/' + seg }));
+            } catch (_) {}
+        }
+
         // Params — only if "params" checked
         if (active.has('params')) {
             try {
@@ -449,7 +474,7 @@ window.InjectorUI = (() => {
             grouped[source].push(key);
         });
 
-        const sourceLabels = { param: 'Params', header: 'Headers', body: 'Body' };
+        const sourceLabels = { path: 'Paths', param: 'Params', header: 'Headers', body: 'Body' };
         let html = '<table><thead><tr><th></th><th>Source</th><th>Key</th></tr></thead><tbody>';
         for (const [source, sourceKeys] of Object.entries(grouped)) {
             sourceKeys.forEach((key, i) => {

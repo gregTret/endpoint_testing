@@ -9,28 +9,65 @@ const PROXY_PORT = 8080;
 const BACKEND_PORT = 8000;
 let TOOL_PANEL_WIDTH = 520;
 const NAV_BAR_HEIGHT = 52;
+const IS_WIN = process.platform === 'win32';
 
 let mainWindow;
 let browserView;
 let pythonProcess;
+
+// ── Python detection ──────────────────────────────────────────────
+
+/**
+ * Find a working Python 3 executable on this system.
+ * Tries python3 first (macOS / Linux default), then python.
+ */
+function findPython() {
+    for (const cmd of ['python3', 'python']) {
+        try {
+            const ver = execSync(`${cmd} --version`, {
+                encoding: 'utf-8',
+                stdio: ['pipe', 'pipe', 'ignore'],
+            }).trim();
+            if (ver.startsWith('Python 3')) {
+                console.log(`[Startup] Using ${cmd} (${ver})`);
+                return cmd;
+            }
+        } catch (_) {}
+    }
+    console.error('[Startup] No Python 3 found — falling back to "python"');
+    return 'python';
+}
+
+const PYTHON = findPython();
 
 // ── Backend lifecycle ──────────────────────────────────────────────
 
 function freePort(port) {
     // Kill anything already bound to this port before we start
     try {
-        const out = execSync(
-            `netstat -ano | findstr ":${port}" | findstr "LISTENING"`,
-            { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] },
-        );
-        const pids = new Set();
-        for (const line of out.trim().split('\n')) {
-            const pid = line.trim().split(/\s+/).pop();
-            if (pid && pid !== '0') pids.add(pid);
-        }
-        for (const pid of pids) {
-            console.log(`[Startup] killing stale process on port ${port} (PID ${pid})`);
-            try { execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore' }); } catch (_) {}
+        if (IS_WIN) {
+            const out = execSync(
+                `netstat -ano | findstr ":${port}" | findstr "LISTENING"`,
+                { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] },
+            );
+            const pids = new Set();
+            for (const line of out.trim().split('\n')) {
+                const pid = line.trim().split(/\s+/).pop();
+                if (pid && pid !== '0') pids.add(pid);
+            }
+            for (const pid of pids) {
+                console.log(`[Startup] killing stale process on port ${port} (PID ${pid})`);
+                try { execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore' }); } catch (_) {}
+            }
+        } else {
+            const out = execSync(
+                `lsof -ti :${port}`,
+                { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] },
+            );
+            for (const pid of out.trim().split('\n').filter(Boolean)) {
+                console.log(`[Startup] killing stale process on port ${port} (PID ${pid})`);
+                try { execSync(`kill -9 ${pid}`, { stdio: 'ignore' }); } catch (_) {}
+            }
         }
     } catch (_) {
         // No process on port — good
@@ -43,9 +80,9 @@ function startBackend() {
 
     const backendDir = path.join(__dirname, '..', 'backend');
     pythonProcess = spawn(
-        'python',
+        PYTHON,
         ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', String(BACKEND_PORT)],
-        { cwd: backendDir, env: { ...process.env, PYTHONUNBUFFERED: '1' } },
+        { cwd: backendDir, env: { ...process.env, PYTHONUNBUFFERED: '1' }, detached: !IS_WIN },
     );
     pythonProcess.stdout.on('data', (d) => console.log(`[Backend] ${d.toString().trim()}`));
     pythonProcess.stderr.on('data', (d) => console.log(`[Backend] ${d.toString().trim()}`));
@@ -293,8 +330,13 @@ app.whenReady().then(() => {
 function killBackend() {
     if (!pythonProcess) return;
     try {
-        // Windows needs taskkill to kill the entire process tree
-        execSync(`taskkill /F /T /PID ${pythonProcess.pid}`, { stdio: 'ignore' });
+        if (IS_WIN) {
+            // Windows needs taskkill to kill the entire process tree
+            execSync(`taskkill /F /T /PID ${pythonProcess.pid}`, { stdio: 'ignore' });
+        } else {
+            // Unix: kill process group
+            process.kill(-pythonProcess.pid, 'SIGTERM');
+        }
     } catch (_) {
         pythonProcess.kill();
     }

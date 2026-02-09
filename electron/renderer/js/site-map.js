@@ -110,9 +110,25 @@ window.SiteMap = (() => {
         row.appendChild(lbl);
         wrap.appendChild(row);
 
-        // Left click → navigate browser + toggle children
+        // Single click → toggle children (debounced to avoid triggering on dblclick)
+        let clickTimer = null;
         row.addEventListener('click', (e) => {
             e.stopPropagation();
+            if (clickTimer) clearTimeout(clickTimer);
+            clickTimer = setTimeout(() => {
+                clickTimer = null;
+                if (hasChildren) {
+                    const open = childContainer.style.display !== 'none';
+                    childContainer.style.display = open ? 'none' : 'block';
+                    toggle.textContent = open ? '▸' : '▾';
+                }
+            }, 250);
+        });
+
+        // Double click → navigate browser
+        row.addEventListener('dblclick', (e) => {
+            e.stopPropagation();
+            if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
             window.electronAPI.navigate(fullUrl);
             document.getElementById('url-input').value = fullUrl;
         });
@@ -142,6 +158,7 @@ window.SiteMap = (() => {
         }
         wrap.appendChild(childContainer);
 
+        // Toggle arrow still works independently for users who click just the arrow
         if (hasChildren) {
             toggle.addEventListener('click', (e) => {
                 e.stopPropagation();

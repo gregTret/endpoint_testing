@@ -17,6 +17,7 @@ import httpx
 from config import SCAN_DEFAULT_TIMEOUT, SCAN_RESPONSE_CAP, PROXY_HOST, PROXY_PORT
 from injectors.base import BaseInjector, _build_targets, _DROP_HEADERS, _SCAN_MARKER, _inject_into_body, _normalize_url_params
 from models.scan_config import ScanResult, VulnerabilityReport
+from storage.db import get_payload_config
 
 log = logging.getLogger(__name__)
 
@@ -31,9 +32,10 @@ class QuickScanInjector(BaseInjector):
     name = "quick"
     description = "Quick scan — tests a few critical payloads from every injector type"
 
-    def __init__(self, injector_registry: dict | None = None) -> None:
+    def __init__(self, injector_registry: dict | None = None, workspace_id: str | None = None) -> None:
         super().__init__()
         self._registry = injector_registry or {}
+        self._workspace_id = workspace_id
 
     # ── Not used directly (test_endpoint is overridden) ──────────────
 
@@ -83,7 +85,13 @@ class QuickScanInjector(BaseInjector):
             if key in _SKIP_TYPES:
                 continue
             sub = cls()
-            for p in sub.generate_quick_payloads(context):
+            # Load per-injector payload config when workspace is set
+            overrides = await get_payload_config(self._workspace_id, key) if self._workspace_id else []
+            if overrides:
+                quick_payloads = [r["payload_text"] for r in overrides if r["enabled"] and r["is_quick"]]
+            else:
+                quick_payloads = sub.generate_quick_payloads(context)
+            for p in quick_payloads:
                 work.append((sub, p))
 
         total = len(work) * len(targets)
