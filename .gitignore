@@ -37,3 +37,4 @@ Desktop.ini
 # ── mitmproxy generated certs ──
 ~/.mitmproxy/
 .claude/*
+CLAUDE.md

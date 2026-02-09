@@ -67,6 +67,7 @@
         InjectorUI.init();
         Repeater.init();
         Analytics.init();
+        PayloadEditor.init();
 
         // URL bar
         document.getElementById('btn-go').addEventListener('click', navigate);
@@ -86,6 +87,16 @@
         });
 
         // Settings — clear buttons
+        document.getElementById('btn-clear-logs-all').addEventListener('click', () => {
+            if (!confirm('Clear all request logs for this workspace?')) return;
+            fetch(`${API}/logs`, { method: 'DELETE' }).catch(() => {});
+            if (LogViewer.clear) LogViewer.clear();
+        });
+        document.getElementById('btn-clear-sitemap').addEventListener('click', () => {
+            if (!confirm('Clear the entire site map for this workspace?')) return;
+            fetch(`${API}/sitemap`, { method: 'DELETE' }).catch(() => {});
+            if (SiteMap.clear) SiteMap.clear();
+        });
         document.getElementById('btn-clear-injector-history').addEventListener('click', () => {
             if (!confirm('Clear all injector scan history?')) return;
             if (InjectorUI.clearHistory) InjectorUI.clearHistory();
@@ -111,6 +122,7 @@
         if (Credentials.loadCreds) Credentials.loadCreds();
         if (InjectorUI.loadHistory) InjectorUI.loadHistory();
         if (Repeater.loadHistory) Repeater.loadHistory();
+        if (PayloadEditor.refresh) PayloadEditor.refresh();
     }
 
     // ── Tab Config ──────────────────────────────────────────────────

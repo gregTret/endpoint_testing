@@ -127,6 +127,7 @@
                     <label>Injection Points</label>
                     <div id="injection-points" class="checkbox-group">
                         <label><input type="checkbox" value="params" checked> Params</label>
+                        <label><input type="checkbox" value="paths"> Paths</label>
                         <label><input type="checkbox" value="headers"> Headers</label>
                         <label><input type="checkbox" value="body"> Body</label>
                     </div>
@@ -210,13 +211,40 @@
                     <button id="btn-open-export" class="btn-primary" style="width:auto;padding:0 16px">Export Data...</button>
                 </div>
 
+                <!-- Injector Payloads -->
+                <div class="settings-section">
+                    <div class="settings-section-title">Injector Payloads</div>
+                    <p style="font-size:11px;color:var(--text-dim);margin-bottom:8px">Customize which payloads each injector uses for this workspace.</p>
+                    <div id="injector-payload-list"></div>
+                </div>
+
                 <!-- Data Management -->
                 <div class="settings-section">
                     <div class="settings-section-title">Data Management</div>
-                    <div class="settings-actions">
-                        <button id="btn-clear-injector-history" class="btn-small danger">Clear Injector History</button>
-                        <button id="btn-clear-repeater-history" class="btn-small danger">Clear Repeater History</button>
-                    </div>
+                    <table class="data-mgmt-table">
+                        <tbody>
+                            <tr>
+                                <td class="data-mgmt-label">Request Logs</td>
+                                <td class="data-mgmt-desc">Captured proxy traffic for this workspace</td>
+                                <td class="data-mgmt-action"><button id="btn-clear-logs-all" class="btn-small danger">Clear</button></td>
+                            </tr>
+                            <tr>
+                                <td class="data-mgmt-label">Site Map</td>
+                                <td class="data-mgmt-desc">Discovered URLs and crawl results</td>
+                                <td class="data-mgmt-action"><button id="btn-clear-sitemap" class="btn-small danger">Clear</button></td>
+                            </tr>
+                            <tr>
+                                <td class="data-mgmt-label">Injector History</td>
+                                <td class="data-mgmt-desc">Saved scan results and payloads</td>
+                                <td class="data-mgmt-action"><button id="btn-clear-injector-history" class="btn-small danger">Clear</button></td>
+                            </tr>
+                            <tr>
+                                <td class="data-mgmt-label">Repeater History</td>
+                                <td class="data-mgmt-desc">Saved manual request entries</td>
+                                <td class="data-mgmt-action"><button id="btn-clear-repeater-history" class="btn-small danger">Clear</button></td>
+                            </tr>
+                        </tbody>
+                    </table>
                 </div>
 
                 <!-- Credentials -->
@@ -351,6 +379,35 @@
     </div>
 </div>
 
+<!-- ── Payload Editor Modal ────────────────────────────────────── -->
+<div id="payload-editor-modal" class="modal-overlay hidden">
+    <div class="modal-card" style="width:560px;max-height:85vh">
+        <div class="modal-header">
+            <h3 id="payload-editor-title">Edit Payloads</h3>
+            <button id="btn-payload-editor-close" class="btn-small">&times;</button>
+        </div>
+        <div class="payload-editor-toolbar">
+            <input type="text" id="payload-search" placeholder="Filter payloads...">
+            <button id="btn-payload-add" class="btn-small">+ Add</button>
+            <button id="btn-payload-reset" class="btn-small danger">Reset to Defaults</button>
+        </div>
+        <div id="payload-editor-stats" class="payload-editor-stats"></div>
+        <div id="payload-editor-list" class="scrollable payload-editor-list"></div>
+        <div id="payload-add-form" class="payload-add-form hidden">
+            <textarea id="payload-add-text" rows="2" placeholder="Enter new payload..."></textarea>
+            <div class="payload-add-controls">
+                <label><input type="checkbox" id="payload-add-quick"> Quick scan</label>
+                <button id="btn-payload-add-confirm" class="btn-primary" style="width:auto;padding:0 16px">Add Payload</button>
+                <button id="btn-payload-add-cancel" class="btn-small">Cancel</button>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <span id="payload-customized-badge" class="badge hidden" style="margin-right:auto">Customized</span>
+            <button id="btn-payload-save" class="btn-primary" style="width:auto;padding:0 20px">Save Changes</button>
+        </div>
+    </div>
+</div>
+
 <script src="js/workspace.js"></script>
 <script src="js/log-viewer.js"></script>
 <script src="js/site-map.js"></script>
@@ -358,6 +415,7 @@
 <script src="js/repeater.js"></script>
 <script src="js/credentials.js"></script>
 <script src="js/analytics.js"></script>
+<script src="js/payload-editor.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>
