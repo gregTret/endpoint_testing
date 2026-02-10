@@ -81,6 +81,63 @@
             <div id="site-tree" class="scrollable"></div>
         </div>
 
+        <!-- Intercept -->
+        <div class="tab-pane" data-tab="intercept">
+            <div class="pane-controls intercept-controls">
+                <button id="btn-intercept-toggle" class="btn-primary intercept-off">Intercept Off</button>
+                <span id="intercept-queue-count" class="badge" style="display:none">0 queued</span>
+                <span id="intercept-status" class="status-label">Disabled</span>
+            </div>
+            <div id="intercept-current" class="intercept-editor hidden">
+                <div class="intercept-phase-row">
+                    <span id="intercept-phase-badge" class="badge badge-request">REQUEST</span>
+                    <span id="intercept-host" class="status-label"></span>
+                </div>
+                <div class="form-group">
+                    <label>Method + URL</label>
+                    <div class="form-row" style="gap:6px">
+                        <select id="intercept-method" style="flex:0 0 80px">
+                            <option>GET</option><option>POST</option>
+                            <option>PUT</option><option>DELETE</option>
+                            <option>PATCH</option><option>OPTIONS</option>
+                            <option>HEAD</option>
+                        </select>
+                        <input type="text" id="intercept-url" style="flex:1" readonly>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Headers</label>
+                    <textarea id="intercept-headers" rows="6"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>Body</label>
+                    <textarea id="intercept-body" rows="6"></textarea>
+                </div>
+                <div id="intercept-response-section" class="hidden">
+                    <div class="form-group">
+                        <label>Response Status</label>
+                        <input type="number" id="intercept-resp-status" style="width:100px">
+                    </div>
+                    <div class="form-group">
+                        <label>Response Headers</label>
+                        <textarea id="intercept-resp-headers" rows="4"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Response Body</label>
+                        <textarea id="intercept-resp-body" rows="6"></textarea>
+                    </div>
+                </div>
+                <div class="intercept-actions">
+                    <button id="btn-intercept-forward" class="btn-primary">Forward</button>
+                    <button id="btn-intercept-drop" class="btn-small danger">Drop</button>
+                </div>
+            </div>
+            <div id="intercept-empty" class="intercept-placeholder">
+                <p class="placeholder-text">Intercept is disabled. Toggle above to start intercepting proxy traffic.</p>
+            </div>
+            <div id="intercept-history" class="scrollable"></div>
+        </div>
+
         <!-- Injector -->
         <div class="tab-pane" data-tab="injector">
             <div id="injector-config">
@@ -205,10 +262,22 @@
                     <button id="btn-save-tab-config" class="btn-primary" style="margin-top:8px;width:auto;padding:0 16px">Save Tab Layout</button>
                 </div>
 
-                <!-- Export -->
+                <!-- Proxy / Intercept Settings -->
                 <div class="settings-section">
-                    <div class="settings-section-title">Export</div>
-                    <button id="btn-open-export" class="btn-primary" style="width:auto;padding:0 16px">Export Data...</button>
+                    <div class="settings-section-title">Intercept</div>
+                    <label class="toggle-row">
+                        <input type="checkbox" id="chk-intercept-requests" checked>
+                        <span>Intercept outgoing requests</span>
+                    </label>
+                    <label class="toggle-row" style="margin-top:6px">
+                        <input type="checkbox" id="chk-intercept-responses" checked>
+                        <span>Intercept incoming responses</span>
+                    </label>
+                    <label class="toggle-row" style="margin-top:6px">
+                        <input type="checkbox" id="chk-auto-drop-options" checked>
+                        <span>Auto-forward OPTIONS requests</span>
+                    </label>
+                    <p style="font-size:11px;color:var(--text-dim);margin-top:4px">Choose which phases to pause for inspection. OPTIONS auto-forward keeps CORS preflights out of the intercept queue.</p>
                 </div>
 
                 <!-- Injector Payloads -->
@@ -296,6 +365,12 @@
                         </div>
                     </div>
                     <div id="cred-list"></div>
+                </div>
+
+                <!-- Export -->
+                <div class="settings-section">
+                    <div class="settings-section-title">Export</div>
+                    <button id="btn-open-export" class="btn-primary btn-export-full">Export Data...</button>
                 </div>
 
             </div>
@@ -409,8 +484,10 @@
 </div>
 
 <script src="js/workspace.js"></script>
+<script src="js/send-to.js"></script>
 <script src="js/log-viewer.js"></script>
 <script src="js/site-map.js"></script>
+<script src="js/intercept.js"></script>
 <script src="js/injector-ui.js"></script>
 <script src="js/repeater.js"></script>
 <script src="js/credentials.js"></script>

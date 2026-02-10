@@ -468,36 +468,8 @@ window.Analytics = (() => {
     // ── Context Menu (shared for param profile & timing) ───────────
 
     function _showAnalyticsCtx(x, y, scanEntry) {
-        _closeAnalyticsCtx();
-        const menu = document.createElement('div');
-        menu.className = 'ctx-menu';
-        menu.style.left = x + 'px';
-        menu.style.top  = y + 'px';
-        menu.innerHTML = `
-            <div class="ctx-menu-item" data-action="repeater">Send to Repeater</div>
-            <div class="ctx-menu-item" data-action="injector">Send to Injector</div>
-        `;
-
         const req = _buildReqFromScan(scanEntry);
-
-        menu.querySelector('[data-action="repeater"]').addEventListener('click', () => {
-            Repeater.addRequest(req);
-            _closeAnalyticsCtx();
-        });
-        menu.querySelector('[data-action="injector"]').addEventListener('click', () => {
-            if (InjectorUI && InjectorUI.populateFromLog) InjectorUI.populateFromLog(req);
-            document.querySelectorAll('#tab-bar .tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'injector'));
-            document.querySelectorAll('.tab-pane').forEach(p => p.classList.toggle('active', p.dataset.tab === 'injector'));
-            _closeAnalyticsCtx();
-        });
-
-        document.body.appendChild(menu);
-        const dismiss = () => { _closeAnalyticsCtx(); document.removeEventListener('click', dismiss); };
-        setTimeout(() => document.addEventListener('click', dismiss), 0);
-    }
-
-    function _closeAnalyticsCtx() {
-        document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
+        SendTo.showContextMenu(x, y, req, 'analytics');
     }
 
     function _buildReqFromScan(r) {

@@ -18,6 +18,7 @@
     const ALL_TABS = [
         { id: 'logs',      label: 'Logs' },
         { id: 'sitemap',   label: 'Site Map' },
+        { id: 'intercept', label: 'Intercept' },
         { id: 'injector',  label: 'Injector' },
         { id: 'repeater',  label: 'Repeater' },
         { id: 'analytics', label: 'Analytics' },
@@ -63,6 +64,7 @@
         // Initialise sub-modules (once)
         LogViewer.init();
         SiteMap.init();
+        Intercept.init();
         Credentials.init();
         InjectorUI.init();
         Repeater.init();
@@ -105,6 +107,9 @@
             if (!confirm('Clear all repeater history?')) return;
             if (Repeater.clearAll) Repeater.clearAll();
         });
+
+        // Proxy settings toggle
+        initProxySettings();
 
         // Export modal
         initExportModal();
@@ -271,6 +276,8 @@
                 if (msg.type === 'request_log' && msg.data) {
                     LogViewer.addEntry(msg.data);
                     SiteMap.addUrl(msg.data.url);
+                } else if (msg.type === 'intercepted_flow' && msg.data) {
+                    Intercept.onInterceptedFlow(msg.data);
                 }
             } catch (_) {}
         };
@@ -285,6 +292,15 @@
             ws.close();
         };
     }
+
+    // ── Expose WS send for other modules (e.g. Intercept) ─────────
+    window.AppWS = {
+        send(data) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(data));
+            }
+        }
+    };
 
     // ── Existing logs ──────────────────────────────────────────────
 
@@ -355,6 +371,37 @@
             document.body.style.cursor = '';
             document.body.style.userSelect = '';
         });
+    }
+
+    // ── Proxy Settings ──────────────────────────────────────────────
+
+    function initProxySettings() {
+        const chkAutoFwd  = document.getElementById('chk-auto-drop-options');
+        const chkReq      = document.getElementById('chk-intercept-requests');
+        const chkResp     = document.getElementById('chk-intercept-responses');
+        if (!chkAutoFwd) return;
+
+        // Load current values from backend
+        fetch(`${API}/settings/proxy`)
+            .then(r => r.json())
+            .then(data => {
+                chkAutoFwd.checked = data.auto_drop_options;
+                if (chkReq)  chkReq.checked  = data.intercept_requests;
+                if (chkResp) chkResp.checked = data.intercept_responses;
+            })
+            .catch(() => {});
+
+        function postSetting(key, value) {
+            fetch(`${API}/settings/proxy`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ [key]: value }),
+            }).catch(() => {});
+        }
+
+        chkAutoFwd.addEventListener('change', () => postSetting('auto_drop_options', chkAutoFwd.checked));
+        if (chkReq)  chkReq.addEventListener('change',  () => postSetting('intercept_requests',  chkReq.checked));
+        if (chkResp) chkResp.addEventListener('change', () => postSetting('intercept_responses', chkResp.checked));
     }
 
     // ── Export Modal ────────────────────────────────────────────────

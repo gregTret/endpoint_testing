@@ -1,3 +1,4 @@
+import json
 import logging
 
 from fastapi import WebSocket, WebSocketDisconnect, APIRouter
@@ -41,6 +42,25 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     await manager.connect(websocket)
     try:
         while True:
-            await websocket.receive_text()  # keep-alive
+            raw = await websocket.receive_text()
+            # Parse incoming messages for intercept decisions
+            try:
+                msg = json.loads(raw)
+                if msg.get("type") == "intercept_decision":
+                    from api.routes import get_intercept_state
+
+                    state = get_intercept_state()
+                    if state:
+                        ok = state.resolve(
+                            msg.get("flow_id"),
+                            msg.get("decision", "forward"),
+                            msg.get("modifications"),
+                        )
+                        if not ok:
+                            log.warning("intercept resolve failed for flow_id=%s", msg.get("flow_id"))
+            except json.JSONDecodeError:
+                pass  # keep-alive or malformed
+            except Exception:
+                log.exception("error handling WS message")
     except WebSocketDisconnect:
         manager.disconnect(websocket)

@@ -53,6 +53,7 @@ window.InjectorUI = (() => {
                 p.classList.toggle('active', p.dataset.tab === 'analytics'));
         });
 
+
         // Refresh key picker whenever URL, params, headers, or body change
         urlEl.addEventListener('input', refreshKeyPicker);
         paramsEl.addEventListener('input', refreshKeyPicker);
@@ -65,6 +66,11 @@ window.InjectorUI = (() => {
 
         // Load saved scan history for this workspace
         loadHistory();
+
+        SendTo.register('injector', {
+            label: 'Injector',
+            receive(data) { loadFromLog(data); },
+        });
     }
 
     async function loadHistory() {
@@ -516,43 +522,26 @@ window.InjectorUI = (() => {
 
     // ── Context menu on scan results ──────────────────────
     function _showScanCtxMenu(x, y, r) {
-        _closeScanCtxMenu();
-        const menu = document.createElement('div');
-        menu.className = 'ctx-menu';
-        menu.style.left = x + 'px';
-        menu.style.top  = y + 'px';
-        menu.innerHTML = `
-            <div class="ctx-menu-item" data-action="repeater">Send to Repeater</div>
-        `;
-        menu.querySelector('[data-action="repeater"]').addEventListener('click', () => {
-            let hdrs = {};
-            try { hdrs = typeof r.request_headers === 'string' ? JSON.parse(r.request_headers) : (r.request_headers || {}); } catch (_) {}
+        let hdrs = {};
+        try { hdrs = typeof r.request_headers === 'string' ? JSON.parse(r.request_headers) : (r.request_headers || {}); } catch (_) {}
 
-            // Reconstruct URL with params for param-injected requests
-            let fullUrl = r.target_url || '';
-            if (r.injection_point === 'params') {
-                let params = {};
-                try { params = paramsEl.value ? JSON.parse(paramsEl.value) : {}; } catch (_) {}
-                params[r.original_param] = r.payload;
-                const qs = new URLSearchParams(params).toString();
-                if (qs) fullUrl += '?' + qs;
-            }
+        let fullUrl = r.target_url || '';
+        if (r.injection_point === 'params') {
+            let params = {};
+            try { params = paramsEl.value ? JSON.parse(paramsEl.value) : {}; } catch (_) {}
+            params[r.original_param] = r.payload;
+            const qs = new URLSearchParams(params).toString();
+            if (qs) fullUrl += '?' + qs;
+        }
 
-            Repeater.addRequest({
-                method: methodEl.value || 'POST',
-                url: fullUrl,
-                headers: hdrs,
-                body: r.request_body || '',
-            });
-            _closeScanCtxMenu();
-        });
-        document.body.appendChild(menu);
-        const dismiss = () => { _closeScanCtxMenu(); document.removeEventListener('click', dismiss); };
-        setTimeout(() => document.addEventListener('click', dismiss), 0);
-    }
-
-    function _closeScanCtxMenu() {
-        document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
+        SendTo.showContextMenu(x, y, {
+            method: methodEl.value || 'POST',
+            url: fullUrl,
+            headers: hdrs,
+            body: r.request_body || '',
+            request_headers: hdrs,
+            request_body: r.request_body || '',
+        }, 'injector');
     }
 
     function esc(s) {

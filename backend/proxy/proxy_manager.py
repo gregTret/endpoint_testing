@@ -3,11 +3,7 @@ import logging
 import queue
 import threading
 
-from mitmproxy import options
-from mitmproxy.tools.dump import DumpMaster
-
 from config import PROXY_HOST, PROXY_PORT, PROXY_QUEUE_MAX
-from proxy.mitm_addon import InterceptAddon
 
 log = logging.getLogger(__name__)
 
@@ -25,7 +21,11 @@ class ProxyManager:
         self.listen_port = listen_port
         self.log_queue: queue.Queue = queue.Queue(maxsize=PROXY_QUEUE_MAX)
         self._workspace_getter = workspace_getter or (lambda: "default")
-        self.master: DumpMaster | None = None
+        # Lazy import — InterceptState is lightweight, but kept here
+        # so it's available immediately for routes to reference.
+        from proxy.intercept_state import InterceptState
+        self.intercept_state = InterceptState()
+        self.master = None
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self.running = False
@@ -50,14 +50,23 @@ class ProxyManager:
             self.running = False
 
     async def _start_proxy(self) -> None:
-        """Async init — DumpMaster requires a running event loop."""
+        """Async init — DumpMaster requires a running event loop.
+        Heavy mitmproxy imports happen here, inside the background thread."""
+        from mitmproxy import options
+        from mitmproxy.tools.dump import DumpMaster
+        from proxy.mitm_addon import InterceptAddon
+
         opts = options.Options(
             listen_host=self.listen_host,
             listen_port=self.listen_port,
             ssl_insecure=True,
         )
         self.master = DumpMaster(opts, with_dumper=False)
-        addon = InterceptAddon(self.log_queue, workspace_getter=self._workspace_getter)
+        addon = InterceptAddon(
+            self.log_queue,
+            workspace_getter=self._workspace_getter,
+            intercept_state=self.intercept_state,
+        )
         self.master.addons.add(addon)
 
         try:

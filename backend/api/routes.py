@@ -1,11 +1,9 @@
 import logging
 
-import httpx
 from fastapi import APIRouter, BackgroundTasks
 from fastapi.responses import JSONResponse
 
 from config import REPLAY_TIMEOUT, CRAWL_DEFAULT_DEPTH, CRAWL_DEFAULT_MAX_PAGES, PROXY_HOST, PROXY_PORT
-from models.scan_config import ScanConfig
 from storage.db import (
     get_request_logs,
     get_request_log_by_id,
@@ -37,33 +35,42 @@ from storage.db import (
     save_payload_config,
     delete_payload_config,
 )
-from injectors.sql_injector import SQLInjector
-from injectors.aql_injector import AQLInjector
-from injectors.xss_injector import XSSInjector
-from injectors.mongo_injector import MongoInjector
-from injectors.jwt_injector import JWTInjector
-from injectors.ssti_injector import SSTIInjector
-from injectors.cmd_injector import CmdInjector
-from injectors.path_traversal_injector import PathTraversalInjector
-from injectors.quick_scan_injector import QuickScanInjector
 
 log = logging.getLogger(__name__)
 router = APIRouter()
 
-# ── Injector registry (extensible) ────────────────────────────────
-INJECTORS = {
-    "sql": SQLInjector,
-    "aql": AQLInjector,
-    "xss": XSSInjector,
-    "mongo": MongoInjector,
-    "jwt": JWTInjector,
-    "ssti": SSTIInjector,
-    "cmd": CmdInjector,
-    "traversal": PathTraversalInjector,
-    "quick": QuickScanInjector,
-}
+# ── Injector registry (lazy-loaded for fast startup) ──────────────
+_injectors_loaded = False
+INJECTORS = {}
 
-# Spider reference — set by main.py at startup
+
+def _load_injectors():
+    global _injectors_loaded, INJECTORS
+    if _injectors_loaded:
+        return
+    from injectors.sql_injector import SQLInjector
+    from injectors.aql_injector import AQLInjector
+    from injectors.xss_injector import XSSInjector
+    from injectors.mongo_injector import MongoInjector
+    from injectors.jwt_injector import JWTInjector
+    from injectors.ssti_injector import SSTIInjector
+    from injectors.cmd_injector import CmdInjector
+    from injectors.path_traversal_injector import PathTraversalInjector
+    from injectors.quick_scan_injector import QuickScanInjector
+    INJECTORS.update({
+        "sql": SQLInjector,
+        "aql": AQLInjector,
+        "xss": XSSInjector,
+        "mongo": MongoInjector,
+        "jwt": JWTInjector,
+        "ssti": SSTIInjector,
+        "cmd": CmdInjector,
+        "traversal": PathTraversalInjector,
+        "quick": QuickScanInjector,
+    })
+    _injectors_loaded = True
+
+# Spider reference — created lazily on first crawl request
 _spider = None
 
 # Active workspace — all data is scoped to this
@@ -76,14 +83,26 @@ _scan_status: dict = {"running": False, "error": None, "completed": 0, "total": 
 _scan_control: dict = {"signal": "run"}
 
 
-def set_spider(spider) -> None:
+def _get_spider():
+    """Lazy-init the Spider on first use (defers playwright import)."""
     global _spider
-    _spider = spider
+    if _spider is None:
+        from crawler.spider import Spider
+        _spider = Spider()
+    return _spider
 
 
 def get_active_workspace() -> str:
     """Return the active workspace ID (used by mitm addon via main.py)."""
     return _active_workspace
+
+
+# ──────────────────────────── Health ────────────────────────────────
+
+
+@router.get("/health")
+async def health():
+    return {"status": "ok"}
 
 
 # ──────────────────────────── Workspaces ────────────────────────────
@@ -180,39 +199,35 @@ async def start_crawl(
     max_pages: int = CRAWL_DEFAULT_MAX_PAGES,
     background_tasks: BackgroundTasks = None,
 ):
-    if not _spider:
-        return JSONResponse(status_code=500, content={"error": "Spider not initialized"})
-    if _spider.running:
+    spider = _get_spider()
+    if spider.running:
         return JSONResponse(status_code=409, content={"error": "Crawl already in progress"})
 
-    background_tasks.add_task(_spider.crawl, url, max_depth, max_pages)
+    background_tasks.add_task(spider.crawl, url, max_depth, max_pages)
     return {"status": "started", "target": url}
 
 
 @router.get("/crawl/status")
 async def crawl_status():
-    if _spider:
-        return _spider.status
-    return {"running": False, "status": "not initialized"}
+    spider = _get_spider()
+    return spider.status
 
 
 @router.post("/crawl/stop")
 async def stop_crawl():
-    if _spider:
-        _spider.stop()
-        return {"status": "stopping"}
-    return {"status": "not running"}
+    spider = _get_spider()
+    spider.stop()
+    return {"status": "stopping"}
 
 
 @router.get("/crawl/results")
 async def crawl_results():
-    if _spider:
-        return {
-            "visited": list(_spider.visited),
-            "discovered": list(_spider.discovered),
-            "forms": _spider.forms,
-        }
-    return {"visited": [], "discovered": [], "forms": []}
+    spider = _get_spider()
+    return {
+        "visited": list(spider.visited),
+        "discovered": list(spider.discovered),
+        "forms": spider.forms,
+    }
 
 
 # ──────────────────────────── Injection Scanning ────────────────────────────
@@ -220,6 +235,7 @@ async def crawl_results():
 
 @router.get("/injectors")
 async def list_injectors():
+    _load_injectors()
     return [
         {"name": inst.name, "description": inst.description}
         for inst in [cls() for cls in INJECTORS.values()]
@@ -234,6 +250,7 @@ _PAYLOAD_EXCLUDED_TYPES = frozenset({"jwt", "quick"})
 
 @router.get("/injectors/{injector_type}/payloads")
 async def get_injector_payloads(injector_type: str):
+    _load_injectors()
     if injector_type in _PAYLOAD_EXCLUDED_TYPES:
         return JSONResponse(status_code=400, content={"error": f"Payload config not supported for '{injector_type}'"})
     if injector_type not in INJECTORS:
@@ -271,6 +288,7 @@ async def get_injector_payloads(injector_type: str):
 
 @router.put("/injectors/{injector_type}/payloads")
 async def put_injector_payloads(injector_type: str, body: dict):
+    _load_injectors()
     if injector_type in _PAYLOAD_EXCLUDED_TYPES:
         return JSONResponse(status_code=400, content={"error": f"Payload config not supported for '{injector_type}'"})
     if injector_type not in INJECTORS:
@@ -283,6 +301,7 @@ async def put_injector_payloads(injector_type: str, body: dict):
 
 @router.delete("/injectors/{injector_type}/payloads")
 async def reset_injector_payloads(injector_type: str):
+    _load_injectors()
     if injector_type in _PAYLOAD_EXCLUDED_TYPES:
         return JSONResponse(status_code=400, content={"error": f"Payload config not supported for '{injector_type}'"})
     if injector_type not in INJECTORS:
@@ -293,7 +312,11 @@ async def reset_injector_payloads(injector_type: str):
 
 
 @router.post("/scan")
-async def start_scan(config: ScanConfig, background_tasks: BackgroundTasks):
+async def start_scan(config: dict, background_tasks: BackgroundTasks):
+    from models.scan_config import ScanConfig
+    config = ScanConfig(**config)
+
+    _load_injectors()
     global _scan_status
     import uuid
 
@@ -476,6 +499,8 @@ async def export_session_data(session_id: str = None):
 @router.post("/replay/{log_id}")
 async def replay_request(log_id: int):
     """Re-send a previously captured request."""
+    import httpx
+
     entry = await get_request_log_by_id(log_id)
     if not entry:
         return JSONResponse(status_code=404, content={"error": "Log not found"})
@@ -506,6 +531,8 @@ async def replay_request(log_id: int):
 @router.post("/send")
 async def send_single_request(data: dict):
     """Send a single request exactly as configured in the injector form."""
+    import httpx
+
     url = data.get("url", "")
     method = data.get("method", "GET")
     headers = data.get("headers", {})
@@ -568,3 +595,94 @@ async def edit_credential(cred_id: int, cred: dict):
 async def remove_credential(cred_id: int):
     await delete_credential(cred_id)
     return {"status": "deleted"}
+
+
+# ──────────────────────────── Intercept ────────────────────────────
+
+_intercept_state = None
+
+
+def set_intercept_state(state):
+    global _intercept_state
+    _intercept_state = state
+
+
+def get_intercept_state():
+    return _intercept_state
+
+
+@router.get("/intercept/status")
+async def intercept_status():
+    if not _intercept_state:
+        return {"enabled": False, "pending_count": 0, "auto_drop_options": True}
+    return {
+        "enabled": _intercept_state.enabled,
+        "pending_count": len(_intercept_state.get_all_pending()),
+        "auto_drop_options": _intercept_state.auto_drop_options,
+    }
+
+
+@router.post("/intercept/toggle")
+async def intercept_toggle(data: dict):
+    if not _intercept_state:
+        return JSONResponse(status_code=500, content={"error": "Intercept not available"})
+    enabled = data.get("enabled", not _intercept_state.enabled)
+    _intercept_state.enabled = enabled
+    return {"enabled": _intercept_state.enabled}
+
+
+@router.get("/intercept/pending")
+async def intercept_pending():
+    if not _intercept_state:
+        return []
+    return _intercept_state.get_all_pending()
+
+
+@router.post("/intercept/decide")
+async def intercept_decide(data: dict):
+    if not _intercept_state:
+        return JSONResponse(status_code=500, content={"error": "Intercept not available"})
+    flow_id = data.get("flow_id")
+    decision = data.get("decision", "forward")
+    modifications = data.get("modifications")
+    if not flow_id:
+        return JSONResponse(status_code=400, content={"error": "flow_id required"})
+    ok = _intercept_state.resolve(flow_id, decision, modifications)
+    if not ok:
+        return JSONResponse(status_code=404, content={"error": "Flow not found or already resolved"})
+    return {"ok": True}
+
+
+# ──────────────────────────── Proxy Settings ──────────────────────────
+
+
+@router.get("/settings/proxy")
+async def get_proxy_settings():
+    if not _intercept_state:
+        return {
+            "auto_drop_options": True,
+            "intercept_requests": True,
+            "intercept_responses": True,
+        }
+    return {
+        "auto_drop_options": _intercept_state.auto_drop_options,
+        "intercept_requests": _intercept_state.intercept_requests,
+        "intercept_responses": _intercept_state.intercept_responses,
+    }
+
+
+@router.post("/settings/proxy")
+async def update_proxy_settings(data: dict):
+    if not _intercept_state:
+        return JSONResponse(status_code=500, content={"error": "Proxy not available"})
+    if "auto_drop_options" in data:
+        _intercept_state.auto_drop_options = bool(data["auto_drop_options"])
+    if "intercept_requests" in data:
+        _intercept_state.intercept_requests = bool(data["intercept_requests"])
+    if "intercept_responses" in data:
+        _intercept_state.intercept_responses = bool(data["intercept_responses"])
+    return {
+        "auto_drop_options": _intercept_state.auto_drop_options,
+        "intercept_requests": _intercept_state.intercept_requests,
+        "intercept_responses": _intercept_state.intercept_responses,
+    }
