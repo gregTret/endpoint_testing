@@ -157,6 +157,7 @@
                         <label>Injector</label>
                         <select id="inject-type">
                             <option value="quick">Quick Scan</option>
+                            <option value="oob">OOB (Blind)</option>
                             <option value="sql">SQL</option>
                             <option value="aql">AQL</option>
                             <option value="xss">XSS</option>
@@ -205,6 +206,64 @@
                 <button id="btn-analyze-filtered" class="btn-small">Analyze Filtered</button>
             </div>
             <div id="scan-results" class="scrollable"></div>
+        </div>
+
+        <!-- OOB (Blind) -->
+        <div class="tab-pane" data-tab="oob">
+            <div id="oob-config">
+                <div class="form-group">
+                    <label>Target URL</label>
+                    <input type="text" id="oob-url" placeholder="https://target.com/api/endpoint">
+                </div>
+                <div class="form-row">
+                    <div class="form-group half">
+                        <label>Method</label>
+                        <select id="oob-method">
+                            <option>GET</option><option>POST</option>
+                            <option>PUT</option><option>DELETE</option>
+                        </select>
+                    </div>
+                    <div class="form-group half">
+                        <label style="color:var(--text-dim);font-size:10px">OOB (Blind) Scanner</label>
+                        <div id="oob-registry-info" class="oob-scan-info">0 scans registered</div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Params (JSON)</label>
+                    <textarea id="oob-params" rows="2" placeholder='{"key": "value"}'></textarea>
+                </div>
+                <div class="form-group">
+                    <label>Headers (JSON)</label>
+                    <textarea id="oob-headers" rows="2" placeholder='{"Authorization": "Bearer ..."}'></textarea>
+                </div>
+                <div class="form-group">
+                    <label>Body</label>
+                    <textarea id="oob-body" rows="2" placeholder="Request body..."></textarea>
+                </div>
+                <div class="form-group">
+                    <label>Injection Points</label>
+                    <div id="oob-injection-points" class="checkbox-group">
+                        <label><input type="checkbox" value="params" checked> Params</label>
+                        <label><input type="checkbox" value="paths"> Paths</label>
+                        <label><input type="checkbox" value="headers"> Headers</label>
+                        <label><input type="checkbox" value="body"> Body</label>
+                    </div>
+                </div>
+                <div class="form-group" id="oob-key-picker-group" style="display:none">
+                    <label>Target Keys <span class="hint">(uncheck to exclude from injection)</span></label>
+                    <div id="oob-key-picker" class="key-picker-table"></div>
+                </div>
+                <div class="scan-controls">
+                    <button id="btn-oob-scan" class="btn-primary">Launch OOB Scan</button>
+                    <button id="btn-oob-check" class="oob-check-btn">Check Callbacks</button>
+                    <button id="btn-oob-pause" class="btn-small hidden">Pause</button>
+                    <button id="btn-oob-stop" class="btn-small danger hidden">Stop</button>
+                </div>
+            </div>
+            <div id="oob-results-toolbar" class="pane-controls hidden">
+                <input type="text" id="oob-text-filter" placeholder="Filter results...">
+            </div>
+            <div id="oob-results" class="scrollable"></div>
         </div>
 
         <!-- Repeater -->
@@ -280,6 +339,32 @@
                     <p style="font-size:11px;color:var(--text-dim);margin-top:4px">Choose which phases to pause for inspection. OPTIONS auto-forward keeps CORS preflights out of the intercept queue.</p>
                 </div>
 
+                <!-- OOB Callback Server -->
+                <div class="settings-section">
+                    <div class="settings-section-title">OOB Callback Server</div>
+                    <p style="font-size:11px;color:var(--text-dim);margin-bottom:8px">Server URL for out-of-band blind vulnerability detection.</p>
+                    <div class="form-group">
+                        <label>Server URL</label>
+                        <input type="text" id="oob-server-url" placeholder="https://your-tunnel.trycloudflare.com" spellcheck="false">
+                    </div>
+                    <div class="form-row" style="gap:6px;align-items:center">
+                        <button id="btn-oob-save" class="btn-primary" style="width:auto;padding:0 16px;height:30px">Save</button>
+                        <button id="btn-oob-test" class="btn-small" style="height:30px">Test Connection</button>
+                        <span id="oob-status" class="status-label"></span>
+                    </div>
+                    <div class="form-group" style="margin-top:10px">
+                        <label>Payload Categories</label>
+                        <div id="oob-categories" class="checkbox-group" style="flex-direction:column;gap:6px">
+                            <label><input type="checkbox" value="cmd" checked> Blind Command Injection</label>
+                            <label><input type="checkbox" value="ssrf" checked> Blind SSRF</label>
+                            <label><input type="checkbox" value="xxe" checked> Blind XXE</label>
+                            <label><input type="checkbox" value="ssti" checked> Blind SSTI</label>
+                            <label><input type="checkbox" value="sqli" checked> Blind SQLi</label>
+                        </div>
+                        <p style="font-size:11px;color:var(--text-dim);margin-top:4px">Select which blind vulnerability types to test. Fewer categories = faster scans.</p>
+                    </div>
+                </div>
+
                 <!-- Injector Payloads -->
                 <div class="settings-section">
                     <div class="settings-section-title">Injector Payloads</div>
@@ -311,6 +396,16 @@
                                 <td class="data-mgmt-label">Repeater History</td>
                                 <td class="data-mgmt-desc">Saved manual request entries</td>
                                 <td class="data-mgmt-action"><button id="btn-clear-repeater-history" class="btn-small danger">Clear</button></td>
+                            </tr>
+                            <tr>
+                                <td class="data-mgmt-label">OOB History</td>
+                                <td class="data-mgmt-desc">OOB scan results (DB)</td>
+                                <td class="data-mgmt-action"><button id="btn-clear-oob-history" class="btn-small danger">Clear</button></td>
+                            </tr>
+                            <tr>
+                                <td class="data-mgmt-label">OOB Registry</td>
+                                <td class="data-mgmt-desc">In-memory scan keys for callback checking</td>
+                                <td class="data-mgmt-action"><button id="btn-clear-oob-registry" class="btn-small danger">Clear</button></td>
                             </tr>
                         </tbody>
                     </table>
@@ -489,6 +584,7 @@
 <script src="js/site-map.js"></script>
 <script src="js/intercept.js"></script>
 <script src="js/injector-ui.js"></script>
+<script src="js/oob-ui.js"></script>
 <script src="js/repeater.js"></script>
 <script src="js/credentials.js"></script>
 <script src="js/analytics.js"></script>

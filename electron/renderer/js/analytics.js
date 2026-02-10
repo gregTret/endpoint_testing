@@ -2,12 +2,13 @@
  * Analytics — full-screen advanced analysis overlay
  *
  * Sections:
- *  1. Security Headers Audit — check responses for missing OWASP-recommended headers
- *  2. Response Timing Analysis — spot outliers suggesting time-based injection or WAFs
- *  3. Parameter Profiling — catalog every parameter, its types, injection acceptance rate
- *  4. Technology Fingerprint — detect server stack from headers and error bodies
- *  5. Attack Surface Heatmap — visual grid: endpoint × injection type → result
- *  6. Postman Export
+ *  1. OOB Test Candidates — heuristic detection of endpoints suitable for blind OOB testing
+ *  2. Security Headers Audit — check responses for missing OWASP-recommended headers
+ *  3. Response Timing Analysis — spot outliers suggesting time-based injection or WAFs
+ *  4. Parameter Profiling — catalog every parameter, its types, injection acceptance rate
+ *  5. Technology Fingerprint — detect server stack from headers and error bodies
+ *  6. Attack Surface Heatmap — visual grid: endpoint × injection type → result
+ *  7. Postman Export
  */
 window.Analytics = (() => {
     const API = 'http://127.0.0.1:8000/api';
@@ -64,6 +65,7 @@ window.Analytics = (() => {
         el.innerHTML = '';
 
         const sections = [
+            renderOobCandidates,
             renderSecurityHeaders,
             renderTimingAnalysis,
             renderParamProfile,
@@ -78,7 +80,179 @@ window.Analytics = (() => {
         });
     }
 
-    // ── 1. Security Headers Audit ───────────────────────────────────
+    // ── 1. OOB Test Candidates ──────────────────────────────────────
+
+    function renderOobCandidates(container) {
+        const SSRF_PARAMS = new Set(['url','uri','link','href','redirect','callback','webhook','fetch','src','source','dest','target','next','return','proxy','mirror','image','load']);
+        const CMD_PARAMS  = new Set(['file','filename','path','cmd','command','exec','run','process','dir','folder','ip','host','ping','domain']);
+        const CMD_PATHS   = ['/convert','/export','/download','/upload','/process','/generate','/render','/execute'];
+        const SSTI_PARAMS = new Set(['template','message','subject','content','text','name','greeting','email','preview','render']);
+        const SSTI_PATHS  = ['/preview','/render','/template','/email'];
+        const SQLI_PARAMS = new Set(['id','user_id','sort','order','filter','search','query','where','column','field','select','limit','offset','page','category','type','status']);
+        const SQLI_PATHS  = ['/search','/filter','/list','/users','/products','/items'];
+
+        let html = '<div class="analytics-section-title">OOB Test Candidates</div>';
+
+        if (!logData.length) {
+            html += filteredMode
+                ? '<p class="placeholder-text">Not available in filtered mode (requires full request log data)</p>'
+                : '<p class="placeholder-text">No logged requests to analyze</p>';
+            container.innerHTML = html;
+            return;
+        }
+
+        // Deduplicate endpoints by METHOD + base path, keep first log entry as sample
+        const endpoints = {};
+        logData.forEach(l => {
+            const key = `${l.method} ${_basePath(l.url)}`;
+            if (!endpoints[key]) endpoints[key] = { method: l.method, url: l.url, logs: [] };
+            endpoints[key].logs.push(l);
+        });
+
+        const rows = [];
+
+        for (const [key, ep] of Object.entries(endpoints)) {
+            const categories = {};  // category → Set of reasons
+
+            // Collect param names, values, and path from all instances of this endpoint
+            const paramNames = new Set();
+            const paramValues = [];
+            let pathname = '';
+            let hasXmlContentType = false;
+            let hasXmlBody = false;
+            const bodyKeys = new Set();
+
+            ep.logs.forEach(l => {
+                try {
+                    const u = new URL(l.url);
+                    pathname = u.pathname;
+                    for (const [k, v] of u.searchParams) {
+                        paramNames.add(k.toLowerCase());
+                        paramValues.push(v);
+                    }
+                } catch (_) {}
+
+                // Check request content-type
+                const ct = _getHeader(l.request_headers, 'content-type') || '';
+                if (/xml|soap|svg/i.test(ct)) hasXmlContentType = true;
+
+                // Parse body for JSON keys or detect XML
+                const body = l.request_body || '';
+                if (body.trimStart().startsWith('<?xml') || body.trimStart().startsWith('<!DOCTYPE')) hasXmlBody = true;
+                try {
+                    const parsed = JSON.parse(body);
+                    if (parsed && typeof parsed === 'object') {
+                        _collectKeys(parsed, bodyKeys, paramValues);
+                    }
+                } catch (_) {}
+            });
+
+            // Merge body keys into param names
+            bodyKeys.forEach(k => paramNames.add(k.toLowerCase()));
+
+            const pathLower = pathname.toLowerCase();
+
+            // ── SSRF check ──
+            const ssrfReasons = [];
+            paramValues.forEach(v => { if (/https?:\/\//i.test(v)) ssrfReasons.push('URL-like param value'); });
+            paramNames.forEach(p => { if (SSRF_PARAMS.has(p)) ssrfReasons.push(`param: ${p}`); });
+            if (ssrfReasons.length) categories['ssrf'] = [...new Set(ssrfReasons)];
+
+            // ── XXE check ──
+            const xxeReasons = [];
+            if (hasXmlContentType) xxeReasons.push('XML/SOAP/SVG content-type');
+            if (hasXmlBody) xxeReasons.push('XML body detected');
+            if (xxeReasons.length) categories['xxe'] = xxeReasons;
+
+            // ── CMD check ──
+            const cmdReasons = [];
+            paramNames.forEach(p => { if (CMD_PARAMS.has(p)) cmdReasons.push(`param: ${p}`); });
+            CMD_PATHS.forEach(seg => { if (pathLower.includes(seg)) cmdReasons.push(`path: ${seg}`); });
+            if (cmdReasons.length) categories['cmd'] = cmdReasons;
+
+            // ── SSTI check ──
+            const sstiReasons = [];
+            paramNames.forEach(p => { if (SSTI_PARAMS.has(p)) sstiReasons.push(`param: ${p}`); });
+            SSTI_PATHS.forEach(seg => { if (pathLower.includes(seg)) sstiReasons.push(`path: ${seg}`); });
+            if (sstiReasons.length) categories['ssti'] = sstiReasons;
+
+            // ── SQLi check ──
+            const sqliReasons = [];
+            paramNames.forEach(p => { if (SQLI_PARAMS.has(p)) sqliReasons.push(`param: ${p}`); });
+            SQLI_PATHS.forEach(seg => { if (pathLower.includes(seg)) sqliReasons.push(`path: ${seg}`); });
+            if (sqliReasons.length) categories['sqli'] = sqliReasons;
+
+            if (Object.keys(categories).length) {
+                rows.push({ key, ep, categories, sample: ep.logs[0] });
+            }
+        }
+
+        if (!rows.length) {
+            html += '<p class="placeholder-text">No OOB-candidate signals detected in logged traffic</p>';
+            container.innerHTML = html;
+            return;
+        }
+
+        html += '<p style="font-size:11px;color:var(--text-dim);margin-bottom:10px">Endpoints flagged by heuristic analysis as potential candidates for blind out-of-band testing. Right-click a row to send to Injector or Repeater.</p>';
+
+        html += '<table class="analytics-table"><thead><tr><th>Endpoint</th><th>Method</th><th>Categories</th><th>Reasons</th></tr></thead><tbody>';
+
+        rows.forEach((r, idx) => {
+            let shortUrl;
+            try { shortUrl = new URL(r.sample.url).pathname; } catch (_) { shortUrl = r.key; }
+
+            const badges = Object.keys(r.categories).map(c => `<span class="badge badge-oob">${esc(c)}</span>`).join(' ');
+            const reasons = Object.entries(r.categories).map(([c, rs]) => rs.slice(0, 3).join(', ')).join('; ');
+
+            html += `<tr class="analytics-ctx-row" data-oob-idx="${idx}">
+                <td title="${esc(r.sample.url)}"><code>${esc(shortUrl)}</code></td>
+                <td><span class="log-method method-${esc(r.ep.method)}">${esc(r.ep.method)}</span></td>
+                <td>${badges}</td>
+                <td style="font-size:10px;color:var(--text-dim)">${esc(reasons)}</td>
+            </tr>`;
+        });
+
+        html += '</tbody></table>';
+        container.innerHTML = html;
+
+        // Bind right-click context menus
+        container.querySelectorAll('.analytics-ctx-row').forEach(row => {
+            row.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                const r = rows[Number(row.dataset.oobIdx)];
+                if (!r || !r.sample) return;
+                SendTo.showContextMenu(e.clientX, e.clientY, {
+                    method: r.sample.method,
+                    url: r.sample.url,
+                    headers: r.sample.request_headers || {},
+                    body: r.sample.request_body || '',
+                    request_headers: r.sample.request_headers || {},
+                    request_body: r.sample.request_body || '',
+                }, 'analytics');
+            });
+        });
+    }
+
+    /** Get a header value case-insensitively */
+    function _getHeader(headers, name) {
+        if (!headers) return '';
+        const lower = name.toLowerCase();
+        for (const k of Object.keys(headers)) {
+            if (k.toLowerCase() === lower) return headers[k];
+        }
+        return '';
+    }
+
+    /** Recursively collect keys and leaf values from a JSON object */
+    function _collectKeys(obj, keys, values) {
+        for (const [k, v] of Object.entries(obj)) {
+            keys.add(k);
+            if (v && typeof v === 'object' && !Array.isArray(v)) _collectKeys(v, keys, values);
+            else if (typeof v === 'string') values.push(v);
+        }
+    }
+
+    // ── 2. Security Headers Audit ───────────────────────────────────
 
     function renderSecurityHeaders(container) {
         const RECOMMENDED = {
@@ -144,7 +318,7 @@ window.Analytics = (() => {
         container.innerHTML = html;
     }
 
-    // ── 2. Response Timing Analysis ─────────────────────────────────
+    // ── 3. Response Timing Analysis ─────────────────────────────────
 
     function renderTimingAnalysis(container) {
         let html = '<div class="analytics-section-title">Response Timing Analysis</div>';
@@ -238,7 +412,7 @@ window.Analytics = (() => {
         });
     }
 
-    // ── 3. Parameter Profiling ──────────────────────────────────────
+    // ── 4. Parameter Profiling ──────────────────────────────────────
 
     function renderParamProfile(container) {
         let html = '<div class="analytics-section-title">Parameter Injection Profile</div>';
@@ -311,7 +485,7 @@ window.Analytics = (() => {
         });
     }
 
-    // ── 4. Technology Fingerprint ───────────────────────────────────
+    // ── 5. Technology Fingerprint ───────────────────────────────────
 
     function renderTechFingerprint(container) {
         let html = '<div class="analytics-section-title">Technology Fingerprint</div>';
@@ -369,7 +543,7 @@ window.Analytics = (() => {
         container.innerHTML = html;
     }
 
-    // ── 5. Attack Surface Heatmap ───────────────────────────────────
+    // ── 6. Attack Surface Heatmap ───────────────────────────────────
 
     function renderAttackSurface(container) {
         let html = '<div class="analytics-section-title">Attack Surface Heatmap</div>';

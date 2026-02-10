@@ -34,5 +34,10 @@ SCAN_DEFAULT_TIMEOUT = 10.0    # seconds per request
 SCAN_RESPONSE_CAP = 10_000     # max chars kept per scan response
 REPLAY_TIMEOUT = 15.0
 
+# ── OOB Callback ─────────────────────────────────────────────────
+OOB_DEFAULT_URL = "https://buck-permalink-asia-endif.trycloudflare.com"
+OOB_POLL_INTERVAL = 2.0        # seconds between polls
+OOB_POLL_DURATION = 15.0       # total seconds to poll after injection
+
 # ── HTML parsing ───────────────────────────────────────────────────
 HTML_PARSER = "lxml"           # falls back to "html.parser" if lxml missing

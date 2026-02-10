@@ -1,9 +1,14 @@
+import asyncio
+import json
 import logging
+import time
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks
 from fastapi.responses import JSONResponse
 
 from config import REPLAY_TIMEOUT, CRAWL_DEFAULT_DEPTH, CRAWL_DEFAULT_MAX_PAGES, PROXY_HOST, PROXY_PORT
+from config import OOB_DEFAULT_URL
 from storage.db import (
     get_request_logs,
     get_request_log_by_id,
@@ -34,6 +39,10 @@ from storage.db import (
     get_payload_config,
     save_payload_config,
     delete_payload_config,
+    get_workspace_setting,
+    set_workspace_setting,
+    get_oob_results_by_workspace,
+    delete_oob_results_by_workspace,
 )
 
 log = logging.getLogger(__name__)
@@ -57,6 +66,7 @@ def _load_injectors():
     from injectors.cmd_injector import CmdInjector
     from injectors.path_traversal_injector import PathTraversalInjector
     from injectors.quick_scan_injector import QuickScanInjector
+    from injectors.oob_injector import OOBInjector
     INJECTORS.update({
         "sql": SQLInjector,
         "aql": AQLInjector,
@@ -67,6 +77,7 @@ def _load_injectors():
         "cmd": CmdInjector,
         "traversal": PathTraversalInjector,
         "quick": QuickScanInjector,
+        "oob": OOBInjector,
     })
     _injectors_loaded = True
 
@@ -81,6 +92,12 @@ _scan_status: dict = {"running": False, "error": None, "completed": 0, "total": 
 
 # Scan control: "run" | "pause" | "stop"
 _scan_control: dict = {"signal": "run"}
+
+# OOB post-scan recheck state
+_oob_recheck_status: dict = {"active": False, "ends_at": 0, "scan_id": "", "found": 0}
+
+# OOB scan registry — accumulates scan contexts across OOB scans (keyed by workspace_id)
+_oob_scan_registry: dict[str, list[dict]] = {}
 
 
 def _get_spider():
@@ -245,7 +262,7 @@ async def list_injectors():
 # ── Payload Config (per-workspace injector payloads) ────────────────
 
 
-_PAYLOAD_EXCLUDED_TYPES = frozenset({"jwt", "quick"})
+_PAYLOAD_EXCLUDED_TYPES = frozenset({"jwt", "quick", "oob"})
 
 
 @router.get("/injectors/{injector_type}/payloads")
@@ -311,14 +328,89 @@ async def reset_injector_payloads(injector_type: str):
     return {"ok": True}
 
 
+async def _oob_recheck_loop(scan_id: str, recheck_info: dict, workspace_id: str):
+    """Poll the OOB server for delayed callbacks after the initial scan ends."""
+    import httpx
+
+    global _oob_recheck_status
+    oob_base_url = recheck_info["oob_base_url"]
+    scan_key = recheck_info["scan_key"]
+    token_map = recheck_info["token_map"]
+    token_target_map = recheck_info["token_target_map"]
+    url = recheck_info["url"]
+    seen_tokens = set(recheck_info["seen_tokens"])
+    start_time = recheck_info["start_time"]
+
+    try:
+        for _ in range(5):
+            if not _oob_recheck_status["active"]:
+                break
+            await asyncio.sleep(60)
+            if not _oob_recheck_status["active"]:
+                break
+
+            try:
+                async with httpx.AsyncClient(verify=False, timeout=10.0) as client:
+                    resp = await client.get(
+                        f"{oob_base_url}/api/callbacks/{scan_key}",
+                        params={"since": start_time},
+                    )
+                    if resp.status_code != 200:
+                        continue
+                    callbacks = resp.json()
+            except Exception:
+                continue
+
+            if not isinstance(callbacks, list):
+                callbacks = callbacks.get("callbacks", []) if isinstance(callbacks, dict) else []
+
+            for cb in callbacks:
+                cb_token = cb.get("token", "")
+                if cb_token in seen_tokens or cb_token not in token_map:
+                    continue
+                seen_tokens.add(cb_token)
+
+                payload_str, sub_type = token_map[cb_token]
+                inj_point, inj_key = token_target_map.get(cb_token, ("unknown", "unknown"))
+                source_ip = cb.get("source_ip", cb.get("ip", "unknown"))
+                cb_time = cb.get("timestamp", cb.get("time", ""))
+
+                result = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "target_url": url,
+                    "injector_type": f"oob:{sub_type}",
+                    "payload": payload_str,
+                    "injection_point": inj_point,
+                    "original_param": inj_key,
+                    "response_code": 0,
+                    "is_vulnerable": True,
+                    "confidence": "high",
+                    "details": (
+                        f"OOB callback received (delayed)! Type: {sub_type} | "
+                        f"Source IP: {source_ip} | Callback at: {cb_time}"
+                    ),
+                    "session_id": scan_id,
+                    "workspace_id": workspace_id,
+                }
+                await save_scan_result(result)
+                _oob_recheck_status["found"] += 1
+                log.info("OOB recheck found delayed callback: %s token=%s", sub_type, cb_token)
+    finally:
+        _oob_recheck_status["active"] = False
+        log.info("OOB recheck loop finished for scan %s (found %d)", scan_id, _oob_recheck_status["found"])
+
+
 @router.post("/scan")
 async def start_scan(config: dict, background_tasks: BackgroundTasks):
     from models.scan_config import ScanConfig
     config = ScanConfig(**config)
 
     _load_injectors()
-    global _scan_status
+    global _scan_status, _oob_recheck_status
     import uuid
+
+    # Cancel any active OOB recheck from a previous scan
+    _oob_recheck_status["active"] = False
 
     injector_cls = INJECTORS.get(config.injector_type)
     if not injector_cls:
@@ -332,6 +424,11 @@ async def start_scan(config: dict, background_tasks: BackgroundTasks):
 
     if config.injector_type == "quick":
         injector = injector_cls(injector_registry=INJECTORS, workspace_id=_active_workspace)
+    elif config.injector_type == "oob":
+        oob_url = await get_workspace_setting(_active_workspace, "oob_server_url") or OOB_DEFAULT_URL
+        raw_types = await get_workspace_setting(_active_workspace, "oob_enabled_types")
+        enabled_types = json.loads(raw_types) if raw_types else None
+        injector = injector_cls(oob_base_url=oob_url, enabled_types=enabled_types)
     else:
         injector = injector_cls()
 
@@ -362,7 +459,7 @@ async def start_scan(config: dict, background_tasks: BackgroundTasks):
         await save_scan_result(d)
 
     async def run_scan():
-        global _scan_status
+        global _scan_status, _oob_recheck_status
         try:
             log.info("scan %s started: %s against %s", scan_id, config.injector_type, config.target_url)
             results = await injector.test_endpoint(
@@ -379,6 +476,25 @@ async def start_scan(config: dict, background_tasks: BackgroundTasks):
             )
             log.info("scan %s completed: %d results", scan_id, len(results))
             _scan_status["running"] = False
+
+            # Register OOB scan context for manual recheck + spawn auto-recheck loop
+            recheck_info = getattr(injector, "_recheck_info", None)
+            if recheck_info:
+                ws = _active_workspace
+                if ws not in _oob_scan_registry:
+                    _oob_scan_registry[ws] = []
+                _oob_scan_registry[ws].append({**recheck_info, "scan_id": scan_id})
+                log.info("OOB scan registered: scan_key=%s (%d total for workspace %s)",
+                         recheck_info["scan_key"], len(_oob_scan_registry[ws]), ws)
+
+                _oob_recheck_status = {
+                    "active": True,
+                    "ends_at": time.time() + 5 * 60,
+                    "scan_id": scan_id,
+                    "found": 0,
+                }
+                asyncio.create_task(_oob_recheck_loop(scan_id, recheck_info, ws))
+                log.info("OOB recheck loop started for scan %s", scan_id)
         except Exception as e:
             log.error("scan %s failed: %s", scan_id, e, exc_info=True)
             _scan_status["running"] = False
@@ -395,7 +511,14 @@ async def start_scan(config: dict, background_tasks: BackgroundTasks):
 
 @router.get("/scan/status")
 async def scan_status():
-    return {**_scan_status, "control": _scan_control["signal"]}
+    remaining = max(0, _oob_recheck_status["ends_at"] - time.time()) if _oob_recheck_status["active"] else 0
+    return {
+        **_scan_status,
+        "control": _scan_control["signal"],
+        "oob_recheck": _oob_recheck_status["active"],
+        "oob_recheck_remaining": round(remaining),
+        "oob_recheck_found": _oob_recheck_status["found"],
+    }
 
 
 @router.post("/scan/pause")
@@ -686,3 +809,157 @@ async def update_proxy_settings(data: dict):
         "intercept_requests": _intercept_state.intercept_requests,
         "intercept_responses": _intercept_state.intercept_responses,
     }
+
+
+# ──────────────────────────── OOB Settings ──────────────────────────
+
+
+@router.get("/settings/oob")
+async def get_oob_settings():
+    url = await get_workspace_setting(_active_workspace, "oob_server_url") or OOB_DEFAULT_URL
+    raw_types = await get_workspace_setting(_active_workspace, "oob_enabled_types")
+    enabled_types = json.loads(raw_types) if raw_types else ["cmd", "ssrf", "xxe", "ssti", "sqli"]
+    return {"oob_server_url": url, "oob_enabled_types": enabled_types}
+
+
+@router.post("/settings/oob")
+async def update_oob_settings(data: dict):
+    url = (data.get("oob_server_url") or "").strip().rstrip("/")
+    if not url:
+        return JSONResponse(status_code=400, content={"error": "URL is required"})
+    await set_workspace_setting(_active_workspace, "oob_server_url", url)
+    if "oob_enabled_types" in data:
+        await set_workspace_setting(_active_workspace, "oob_enabled_types", json.dumps(data["oob_enabled_types"]))
+    raw_types = await get_workspace_setting(_active_workspace, "oob_enabled_types")
+    enabled_types = json.loads(raw_types) if raw_types else ["cmd", "ssrf", "xxe", "ssti", "sqli"]
+    return {"oob_server_url": url, "oob_enabled_types": enabled_types}
+
+
+@router.post("/settings/oob/test")
+async def test_oob_connection(data: dict = None):
+    """Proxied health check — backend calls OOB server to avoid CSP issues."""
+    import httpx
+    url = (data or {}).get("oob_server_url") or await get_workspace_setting(_active_workspace, "oob_server_url") or OOB_DEFAULT_URL
+    url = url.rstrip("/")
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=10.0) as client:
+            resp = await client.get(f"{url}/api/health")
+            if resp.status_code == 200:
+                return {"ok": True, "status": resp.json()}
+            return JSONResponse(status_code=502, content={"ok": False, "error": f"Server returned {resp.status_code}"})
+    except Exception as e:
+        return JSONResponse(status_code=502, content={"ok": False, "error": str(e)})
+
+
+# ──────────────────────────── OOB Tab Endpoints ──────────────────────────
+
+
+@router.get("/oob/results")
+async def oob_results(limit: int = 500):
+    """Return OOB-only scan results for the active workspace."""
+    return await get_oob_results_by_workspace(_active_workspace, limit)
+
+
+@router.delete("/oob/results")
+async def oob_clear_results():
+    """Delete all OOB scan results for the active workspace."""
+    await delete_oob_results_by_workspace(_active_workspace)
+    return {"ok": True}
+
+
+@router.delete("/oob/registry")
+async def oob_clear_registry():
+    """Clear the in-memory OOB scan registry for the active workspace."""
+    _oob_scan_registry.pop(_active_workspace, None)
+    return {"ok": True}
+
+
+@router.get("/oob/status")
+async def oob_status():
+    """Return OOB registry info and recheck status."""
+    entries = _oob_scan_registry.get(_active_workspace, [])
+    remaining = max(0, _oob_recheck_status["ends_at"] - time.time()) if _oob_recheck_status["active"] else 0
+    return {
+        "registry_count": len(entries),
+        "recheck_active": _oob_recheck_status["active"],
+        "recheck_remaining": round(remaining),
+        "recheck_found": _oob_recheck_status["found"],
+    }
+
+
+@router.post("/oob/check")
+async def oob_manual_check():
+    """Manually recheck ALL stored OOB scan keys for new callbacks."""
+    import httpx
+
+    entries = _oob_scan_registry.get(_active_workspace, [])
+    if not entries:
+        return {"checked": 0, "found": 0, "details": []}
+
+    total_found = 0
+    details = []
+
+    async with httpx.AsyncClient(verify=False, timeout=10.0) as client:
+        for entry in entries:
+            oob_base_url = entry["oob_base_url"]
+            scan_key = entry["scan_key"]
+            token_map = entry["token_map"]
+            token_target_map = entry["token_target_map"]
+            url = entry["url"]
+            seen_tokens = entry["seen_tokens"]
+            start_time = entry["start_time"]
+            scan_id = entry["scan_id"]
+
+            try:
+                resp = await client.get(
+                    f"{oob_base_url}/api/callbacks/{scan_key}",
+                    params={"since": start_time},
+                )
+                if resp.status_code != 200:
+                    continue
+                callbacks = resp.json()
+            except Exception:
+                continue
+
+            if not isinstance(callbacks, list):
+                callbacks = callbacks.get("callbacks", []) if isinstance(callbacks, dict) else []
+
+            for cb in callbacks:
+                cb_token = cb.get("token", "")
+                if cb_token in seen_tokens or cb_token not in token_map:
+                    continue
+                seen_tokens.add(cb_token)
+
+                payload_str, sub_type = token_map[cb_token]
+                inj_point, inj_key = token_target_map.get(cb_token, ("unknown", "unknown"))
+                source_ip = cb.get("source_ip", cb.get("ip", "unknown"))
+                cb_time = cb.get("timestamp", cb.get("time", ""))
+
+                result = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "target_url": url,
+                    "injector_type": f"oob:{sub_type}",
+                    "payload": payload_str,
+                    "injection_point": inj_point,
+                    "original_param": inj_key,
+                    "response_code": 0,
+                    "is_vulnerable": True,
+                    "confidence": "high",
+                    "details": (
+                        f"OOB callback received (delayed)! Type: {sub_type} | "
+                        f"Source IP: {source_ip} | Callback at: {cb_time}"
+                    ),
+                    "session_id": scan_id,
+                    "workspace_id": _active_workspace,
+                }
+                await save_scan_result(result)
+                total_found += 1
+                details.append({
+                    "scan_key": scan_key,
+                    "sub_type": sub_type,
+                    "token": cb_token,
+                    "source_ip": source_ip,
+                })
+                log.info("OOB manual check found callback: %s token=%s", sub_type, cb_token)
+
+    return {"checked": len(entries), "found": total_found, "details": details}

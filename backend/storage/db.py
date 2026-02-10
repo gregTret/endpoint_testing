@@ -164,6 +164,16 @@ async def init_db():
                 ON payload_config(workspace_id, injector_type)
         """)
 
+        # ── Workspace Settings (key-value per workspace) ──
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS workspace_settings (
+                workspace_id TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                PRIMARY KEY (workspace_id, key)
+            )
+        """)
+
         await db.commit()
 
 
@@ -218,6 +228,7 @@ async def delete_workspace(workspace_id: str) -> None:
         await db.execute("DELETE FROM sitemap_urls WHERE workspace_id = ?", (workspace_id,))
         await db.execute("DELETE FROM repeater_history WHERE workspace_id = ?", (workspace_id,))
         await db.execute("DELETE FROM payload_config WHERE workspace_id = ?", (workspace_id,))
+        await db.execute("DELETE FROM workspace_settings WHERE workspace_id = ?", (workspace_id,))
         await db.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
         await db.commit()
 
@@ -380,6 +391,30 @@ async def delete_scan_history_by_workspace(workspace_id: str = "default"):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "DELETE FROM scan_results WHERE workspace_id = ?", (workspace_id,)
+        )
+        await db.commit()
+
+
+async def get_oob_results_by_workspace(
+    workspace_id: str = "default", limit: int = 500
+) -> list[dict]:
+    """Fetch OOB-only scan results for a workspace."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM scan_results WHERE workspace_id = ? AND injector_type LIKE 'oob:%' ORDER BY id DESC LIMIT ?",
+            (workspace_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def delete_oob_results_by_workspace(workspace_id: str = "default"):
+    """Delete OOB-only scan results for a workspace."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM scan_results WHERE workspace_id = ? AND injector_type LIKE 'oob:%'",
+            (workspace_id,),
         )
         await db.commit()
 
@@ -621,6 +656,41 @@ async def delete_payload_config(workspace_id: str, injector_type: str):
         await db.execute(
             "DELETE FROM payload_config WHERE workspace_id = ? AND injector_type = ?",
             (workspace_id, injector_type),
+        )
+        await db.commit()
+
+
+# ── Workspace Settings ────────────────────────────────────────────
+
+
+async def get_workspace_setting(workspace_id: str, key: str) -> Optional[str]:
+    """Return a single setting value, or None if not set."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT value FROM workspace_settings WHERE workspace_id = ? AND key = ?",
+            (workspace_id, key),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else None
+
+
+async def set_workspace_setting(workspace_id: str, key: str, value: str) -> None:
+    """Upsert a single setting value."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO workspace_settings (workspace_id, key, value) VALUES (?, ?, ?) "
+            "ON CONFLICT(workspace_id, key) DO UPDATE SET value = excluded.value",
+            (workspace_id, key, value),
+        )
+        await db.commit()
+
+
+async def delete_workspace_setting(workspace_id: str, key: str) -> None:
+    """Remove a single setting."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM workspace_settings WHERE workspace_id = ? AND key = ?",
+            (workspace_id, key),
         )
         await db.commit()
 

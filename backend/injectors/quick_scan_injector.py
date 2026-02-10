@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 
 # Injector types that use a custom test_endpoint() and can't participate
 # in the generic quick-payload loop.
-_SKIP_TYPES = frozenset({"jwt", "quick"})
+_SKIP_TYPES = frozenset({"jwt", "quick", "oob"})
 
 
 class QuickScanInjector(BaseInjector):
