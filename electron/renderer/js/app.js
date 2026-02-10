@@ -20,6 +20,7 @@
         { id: 'sitemap',   label: 'Site Map' },
         { id: 'intercept', label: 'Intercept' },
         { id: 'injector',  label: 'Injector' },
+        { id: 'oob',       label: 'OOB' },
         { id: 'repeater',  label: 'Repeater' },
         { id: 'analytics', label: 'Analytics' },
         { id: 'settings',  label: 'Settings' },
@@ -67,6 +68,7 @@
         Intercept.init();
         Credentials.init();
         InjectorUI.init();
+        OobUI.init();
         Repeater.init();
         Analytics.init();
         PayloadEditor.init();
@@ -107,9 +109,20 @@
             if (!confirm('Clear all repeater history?')) return;
             if (Repeater.clearAll) Repeater.clearAll();
         });
+        document.getElementById('btn-clear-oob-history').addEventListener('click', () => {
+            if (!confirm('Clear all OOB scan results?')) return;
+            if (OobUI.clearHistory) OobUI.clearHistory();
+        });
+        document.getElementById('btn-clear-oob-registry').addEventListener('click', () => {
+            if (!confirm('Clear OOB scan registry? This removes in-memory scan keys used for callback checking.')) return;
+            if (OobUI.clearRegistry) OobUI.clearRegistry();
+        });
 
         // Proxy settings toggle
         initProxySettings();
+
+        // OOB callback server settings
+        initOobSettings();
 
         // Export modal
         initExportModal();
@@ -126,8 +139,10 @@
         if (SiteMap.loadSaved) SiteMap.loadSaved();
         if (Credentials.loadCreds) Credentials.loadCreds();
         if (InjectorUI.loadHistory) InjectorUI.loadHistory();
+        if (OobUI.loadHistory) OobUI.loadHistory();
         if (Repeater.loadHistory) Repeater.loadHistory();
         if (PayloadEditor.refresh) PayloadEditor.refresh();
+        if (window._reloadOobSettings) window._reloadOobSettings();
     }
 
     // ── Tab Config ──────────────────────────────────────────────────
@@ -402,6 +417,81 @@
         chkAutoFwd.addEventListener('change', () => postSetting('auto_drop_options', chkAutoFwd.checked));
         if (chkReq)  chkReq.addEventListener('change',  () => postSetting('intercept_requests',  chkReq.checked));
         if (chkResp) chkResp.addEventListener('change', () => postSetting('intercept_responses', chkResp.checked));
+    }
+
+    // ── OOB Settings ────────────────────────────────────────────────
+
+    function initOobSettings() {
+        const urlInput  = document.getElementById('oob-server-url');
+        const saveBtn   = document.getElementById('btn-oob-save');
+        const testBtn   = document.getElementById('btn-oob-test');
+        const statusLbl = document.getElementById('oob-status');
+        const catContainer = document.getElementById('oob-categories');
+        if (!urlInput) return;
+
+        const allTypes = ['cmd', 'ssrf', 'xxe', 'ssti', 'sqli'];
+
+        function setCategoryCheckboxes(enabledTypes) {
+            if (!catContainer) return;
+            const types = enabledTypes || allTypes;
+            catContainer.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+                cb.checked = types.includes(cb.value);
+            });
+        }
+
+        function getCheckedCategories() {
+            if (!catContainer) return allTypes;
+            return Array.from(catContainer.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value);
+        }
+
+        function loadOobSettings() {
+            fetch(`${API}/settings/oob`)
+                .then(r => r.json())
+                .then(data => {
+                    urlInput.value = data.oob_server_url || '';
+                    setCategoryCheckboxes(data.oob_enabled_types);
+                })
+                .catch(() => {});
+        }
+        loadOobSettings();
+
+        // Reload when workspace switches
+        window._reloadOobSettings = loadOobSettings;
+
+        saveBtn.addEventListener('click', () => {
+            const url = urlInput.value.trim();
+            if (!url) { statusLbl.textContent = 'URL is required'; statusLbl.style.color = 'var(--danger)'; return; }
+            fetch(`${API}/settings/oob`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ oob_server_url: url, oob_enabled_types: getCheckedCategories() }),
+            })
+            .then(r => r.json())
+            .then(() => { statusLbl.textContent = 'Saved'; statusLbl.style.color = 'var(--success)'; })
+            .catch(() => { statusLbl.textContent = 'Save failed'; statusLbl.style.color = 'var(--danger)'; });
+        });
+
+        testBtn.addEventListener('click', () => {
+            statusLbl.textContent = 'Testing...';
+            statusLbl.style.color = 'var(--text-dim)';
+            const url = urlInput.value.trim();
+            fetch(`${API}/settings/oob/test`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ oob_server_url: url || undefined }),
+            })
+            .then(async r => {
+                if (r.ok) {
+                    statusLbl.textContent = 'Connected!';
+                    statusLbl.style.color = 'var(--success)';
+                } else {
+                    const d = await r.json().catch(() => ({}));
+                    statusLbl.textContent = d.error || 'Connection failed';
+                    statusLbl.style.color = 'var(--danger)';
+                }
+            })
+            .catch(() => { statusLbl.textContent = 'Connection failed'; statusLbl.style.color = 'var(--danger)'; });
+        });
     }
 
     // ── Export Modal ────────────────────────────────────────────────

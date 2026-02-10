@@ -1,88 +1,77 @@
 /**
- * InjectorUI — injection scan configuration and results display
+ * OobUI — dedicated OOB (blind) scan tab with manual callback checking
  */
-window.InjectorUI = (() => {
+window.OobUI = (() => {
     const API = 'http://127.0.0.1:8000/api';
-    let scanBtn, pauseBtn, stopBtn, resultsEl;
-    let urlEl, methodEl, typeEl, paramsEl, headersEl, bodyEl;
+    let scanBtn, checkBtn, pauseBtn, stopBtn, resultsEl;
+    let urlEl, methodEl, paramsEl, headersEl, bodyEl;
     let scanPollTimer = null;
     let currentScanId = null;
 
     let keyPickerGroup, keyPickerEl;
-    let scanToolbar, textFilterEl, analyzeBtn;
+    let scanToolbar, textFilterEl;
     let textFilter = '';
+    let registryInfoEl;
+
+    let recheckTimer = null;
+    let recheckBannerEl = null;
 
     function init() {
-        urlEl      = document.getElementById('inject-url');
-        methodEl   = document.getElementById('inject-method');
-        typeEl     = document.getElementById('inject-type');
-        paramsEl   = document.getElementById('inject-params');
-        headersEl  = document.getElementById('inject-headers');
-        bodyEl     = document.getElementById('inject-body');
-        scanBtn    = document.getElementById('btn-start-scan');
-        pauseBtn   = document.getElementById('btn-pause-scan');
-        stopBtn    = document.getElementById('btn-stop-scan');
-        resultsEl  = document.getElementById('scan-results');
-        keyPickerGroup = document.getElementById('key-picker-group');
-        keyPickerEl    = document.getElementById('key-picker');
-        scanToolbar    = document.getElementById('scan-results-toolbar');
-        textFilterEl   = document.getElementById('scan-text-filter');
-        analyzeBtn     = document.getElementById('btn-analyze-filtered');
+        urlEl      = document.getElementById('oob-url');
+        methodEl   = document.getElementById('oob-method');
+        paramsEl   = document.getElementById('oob-params');
+        headersEl  = document.getElementById('oob-headers');
+        bodyEl     = document.getElementById('oob-body');
+        scanBtn    = document.getElementById('btn-oob-scan');
+        checkBtn   = document.getElementById('btn-oob-check');
+        pauseBtn   = document.getElementById('btn-oob-pause');
+        stopBtn    = document.getElementById('btn-oob-stop');
+        resultsEl  = document.getElementById('oob-results');
+        keyPickerGroup = document.getElementById('oob-key-picker-group');
+        keyPickerEl    = document.getElementById('oob-key-picker');
+        scanToolbar    = document.getElementById('oob-results-toolbar');
+        textFilterEl   = document.getElementById('oob-text-filter');
+        registryInfoEl = document.getElementById('oob-registry-info');
 
         scanBtn.addEventListener('click', startScan);
+        checkBtn.addEventListener('click', checkCallbacks);
         pauseBtn.addEventListener('click', togglePause);
         stopBtn.addEventListener('click', stopScan);
-        document.getElementById('btn-send-single').addEventListener('click', sendSingle);
 
         textFilterEl.addEventListener('input', () => {
             textFilter = textFilterEl.value.toLowerCase();
             renderResults(lastResults);
         });
 
-        analyzeBtn.addEventListener('click', () => {
-            const visible = getVisibleResults();
-            if (!visible.length) { alert('No results to analyze'); return; }
-            if (!document.querySelector('#tab-bar .tab[data-tab="analytics"]')) {
-                alert('Analytics tab is hidden. Enable it in Settings first.');
-                return;
-            }
-            Analytics.analyzeSubset(visible);
-            document.querySelectorAll('#tab-bar .tab').forEach(t =>
-                t.classList.toggle('active', t.dataset.tab === 'analytics'));
-            document.querySelectorAll('.tab-pane').forEach(p =>
-                p.classList.toggle('active', p.dataset.tab === 'analytics'));
-        });
-
-
-        // Refresh key picker whenever URL, params, headers, or body change
+        // Refresh key picker on input changes
         urlEl.addEventListener('input', refreshKeyPicker);
         paramsEl.addEventListener('input', refreshKeyPicker);
         headersEl.addEventListener('input', refreshKeyPicker);
         bodyEl.addEventListener('input', refreshKeyPicker);
-
-        // Refresh key picker when injection-point checkboxes toggle
-        document.querySelectorAll('#injection-points input[type="checkbox"]')
+        document.querySelectorAll('#oob-injection-points input[type="checkbox"]')
             .forEach(cb => cb.addEventListener('change', refreshKeyPicker));
 
-        // Load saved scan history for this workspace
+        // Recheck banner
+        recheckBannerEl = document.createElement('div');
+        recheckBannerEl.className = 'oob-recheck-banner hidden';
+        resultsEl.parentNode.insertBefore(recheckBannerEl, resultsEl);
+
         loadHistory();
 
-        SendTo.register('injector', {
-            label: 'Injector',
+        SendTo.register('oob', {
+            label: 'OOB',
             receive(data) { loadFromLog(data); },
         });
     }
 
     async function loadHistory() {
+        stopRecheckPoll();
         textFilter = '';
         if (textFilterEl) textFilterEl.value = '';
-
-        // Always reset state so stale data from previous workspace is cleared
         lastResults = [];
         activeFilter = 'all';
         expandedSet.clear();
 
-        // Clear form fields
         if (urlEl) urlEl.value = '';
         if (methodEl) methodEl.value = 'GET';
         if (paramsEl) paramsEl.value = '';
@@ -93,63 +82,20 @@ window.InjectorUI = (() => {
         if (scanToolbar) scanToolbar.classList.add('hidden');
 
         try {
-            const res = await fetch(`${API}/scan/history`);
+            const res = await fetch(`${API}/oob/results`);
             const data = await res.json();
             lastResults = data;
             renderResults(lastResults);
         } catch (_) {
             renderResults([]);
         }
+        refreshRegistryInfo();
     }
 
-    /** Send the request exactly as shown in the form — no injection */
-    async function sendSingle() {
-        let headers = {};
-        try { headers = headersEl.value ? JSON.parse(headersEl.value) : {}; } catch (_) {}
-
-        const payload = {
-            url: urlEl.value,
-            method: methodEl.value,
-            headers,
-            body: bodyEl.value,
-        };
-        if (!payload.url) { alert('Enter a target URL'); return; }
-
-        resultsEl.innerHTML = '<p class="placeholder-text">Sending...</p>';
-        try {
-            const res = await fetch(`${API}/send`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload),
-            });
-            const data = await res.json();
-            resultsEl.innerHTML = `
-                <div class="scan-entry">
-                    <div class="scan-header">
-                        <span class="scan-badge">${data.status_code}</span>
-                        <span class="scan-payload">${esc(data.request_method || payload.method)} ${esc(payload.url)}</span>
-                    </div>
-                    <div class="scan-detail-row"><strong>Request Headers Sent:</strong></div>
-                    <pre class="scan-response-body">${esc(JSON.stringify(data.request_headers || {}, null, 2))}</pre>
-                    <div class="scan-detail-row"><strong>Request Body Sent:</strong></div>
-                    <pre class="scan-response-body">${esc(data.request_body || '(empty)')}</pre>
-                    <div class="scan-detail-row"><strong>Response Headers:</strong></div>
-                    <pre class="scan-response-body">${esc(JSON.stringify(data.headers || {}, null, 2))}</pre>
-                    <div class="scan-detail-row"><strong>Response Body:</strong></div>
-                    <pre class="scan-response-body">${esc(data.body || '(empty)')}</pre>
-                </div>`;
-        } catch (e) {
-            resultsEl.innerHTML = `<p class="placeholder-text" style="color:var(--danger)">Error: ${e.message}</p>`;
-        }
-    }
-
-    /** Populate the form from a log entry (called when user wants to scan a logged request) */
     function loadFromLog(entry) {
         if (!entry) return;
         urlEl.value = entry.url || '';
         methodEl.value = entry.method || 'GET';
-
-        // Try to extract query params as JSON
         try {
             const u = new URL(entry.url);
             const params = {};
@@ -158,16 +104,19 @@ window.InjectorUI = (() => {
         } catch (_) {
             paramsEl.value = '';
         }
-
         headersEl.value = entry.request_headers
             ? JSON.stringify(entry.request_headers, null, 2) : '';
         bodyEl.value = entry.request_body || '';
         refreshKeyPicker();
     }
 
+    // ── Scan ─────────────────────────────────────────────────
+
     async function startScan() {
+        stopRecheckPoll();
+
         const points = [];
-        document.querySelectorAll('#injection-points input:checked')
+        document.querySelectorAll('#oob-injection-points input:checked')
             .forEach(cb => points.push(cb.value));
 
         let params = {};
@@ -176,7 +125,6 @@ window.InjectorUI = (() => {
         let headers = {};
         try { headers = headersEl.value ? JSON.parse(headersEl.value) : {}; } catch (_) {}
 
-        // Collect selected target keys from the picker
         const targetKeys = [];
         keyPickerEl.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
             targetKeys.push(cb.dataset.key);
@@ -185,7 +133,7 @@ window.InjectorUI = (() => {
         const config = {
             target_url: urlEl.value,
             method: methodEl.value,
-            injector_type: typeEl.value,
+            injector_type: 'oob',
             params,
             headers,
             body: bodyEl.value,
@@ -198,10 +146,11 @@ window.InjectorUI = (() => {
 
         scanBtn.disabled = true;
         scanBtn.textContent = 'Scanning...';
+        checkBtn.disabled = true;
         pauseBtn.classList.remove('hidden');
         stopBtn.classList.remove('hidden');
         pauseBtn.textContent = 'Pause';
-        resultsEl.innerHTML = '<p class="placeholder-text">Scan in progress...</p>';
+        resultsEl.innerHTML = '<p class="placeholder-text">OOB scan in progress...</p>';
 
         try {
             const resp = await fetch(`${API}/scan`, {
@@ -215,51 +164,48 @@ window.InjectorUI = (() => {
         } catch (e) {
             resultsEl.innerHTML = `<p class="placeholder-text">Error: ${e.message}</p>`;
             scanBtn.disabled = false;
-            scanBtn.textContent = 'Launch Scan';
+            scanBtn.textContent = 'Launch OOB Scan';
+            checkBtn.disabled = false;
         }
     }
 
     function pollResults() {
         if (scanPollTimer) clearInterval(scanPollTimer);
-
         const pollingScanId = currentScanId;
 
         scanPollTimer = setInterval(async () => {
             try {
-                // Check if scan is still running
                 const statusRes = await fetch(`${API}/scan/status`);
                 const status = await statusRes.json();
-
-                // Make sure we're still tracking the same scan
                 if (status.scan_id !== pollingScanId) return;
 
-                // Update progress text
                 const paused = status.running && status.control === 'pause';
                 if (status.running) {
                     const prefix = paused ? 'Paused' : 'Scanning...';
                     scanBtn.textContent = `${prefix} (${status.completed}/${status.total})`;
                 }
-
-                // Skip re-rendering while paused — no new results, and
-                // rebuilding the DOM closes any expanded detail panels
                 if (paused) return;
 
-                // Fetch results scoped to this scan
                 const res = await fetch(`${API}/scan/results?session_id=${pollingScanId}&limit=500`);
                 const data = await res.json();
                 renderResults(data);
 
-                // Stop polling only when backend says scan is done
                 if (!status.running) {
                     clearInterval(scanPollTimer);
                     scanPollTimer = null;
                     scanBtn.disabled = false;
-                    scanBtn.textContent = 'Launch Scan';
+                    scanBtn.textContent = 'Launch OOB Scan';
+                    checkBtn.disabled = false;
                     pauseBtn.classList.add('hidden');
                     stopBtn.classList.add('hidden');
+                    refreshRegistryInfo();
 
                     if (status.error) {
                         resultsEl.innerHTML += `<p class="placeholder-text" style="color:var(--danger);padding:8px 10px">Scan error: ${esc(status.error)}</p>`;
+                    }
+
+                    if (status.oob_recheck) {
+                        startRecheckPoll(pollingScanId);
                     }
                 }
             } catch (_) {}
@@ -275,14 +221,112 @@ window.InjectorUI = (() => {
     }
 
     async function stopScan() {
+        try { await fetch(`${API}/scan/stop`, { method: 'POST' }); } catch (_) {}
+    }
+
+    // ── Manual Check ─────────────────────────────────────────
+
+    async function checkCallbacks() {
+        checkBtn.disabled = true;
+        checkBtn.textContent = 'Checking...';
         try {
-            await fetch(`${API}/scan/stop`, { method: 'POST' });
+            const res = await fetch(`${API}/oob/check`, { method: 'POST' });
+            const data = await res.json();
+
+            // Refresh results
+            const resultsRes = await fetch(`${API}/oob/results`);
+            const resultsData = await resultsRes.json();
+            renderResults(resultsData);
+
+            if (data.found > 0) {
+                checkBtn.textContent = `Found ${data.found} callback${data.found !== 1 ? 's' : ''}!`;
+                checkBtn.style.borderColor = 'var(--danger)';
+                setTimeout(() => {
+                    checkBtn.textContent = 'Check Callbacks';
+                    checkBtn.style.borderColor = '';
+                }, 4000);
+            } else {
+                checkBtn.textContent = `Checked ${data.checked} scan${data.checked !== 1 ? 's' : ''} — none found`;
+                setTimeout(() => { checkBtn.textContent = 'Check Callbacks'; }, 3000);
+            }
+        } catch (e) {
+            checkBtn.textContent = 'Check failed';
+            setTimeout(() => { checkBtn.textContent = 'Check Callbacks'; }, 3000);
+        }
+        checkBtn.disabled = false;
+    }
+
+    // ── Recheck Polling ──────────────────────────────────────
+
+    function startRecheckPoll(scanId) {
+        stopRecheckPoll();
+        recheckBannerEl.classList.remove('hidden');
+        recheckBannerEl.innerHTML =
+            '<span class="oob-recheck-dot"></span>' +
+            '<span class="oob-recheck-text">OOB recheck active &mdash; monitoring for delayed callbacks...</span>';
+
+        recheckTimer = setInterval(async () => {
+            try {
+                const statusRes = await fetch(`${API}/oob/status`);
+                const status = await statusRes.json();
+
+                // Refresh results
+                const res = await fetch(`${API}/oob/results`);
+                const data = await res.json();
+                renderResults(data);
+
+                if (status.recheck_active) {
+                    const mins = Math.floor(status.recheck_remaining / 60);
+                    const secs = status.recheck_remaining % 60;
+                    const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+                    const foundStr = status.recheck_found > 0
+                        ? ` | <strong style="color:var(--danger)">${status.recheck_found} delayed callback${status.recheck_found !== 1 ? 's' : ''} found</strong>`
+                        : '';
+                    recheckBannerEl.innerHTML =
+                        '<span class="oob-recheck-dot"></span>' +
+                        `<span class="oob-recheck-text">OOB recheck active &mdash; monitoring for delayed callbacks (${timeStr} remaining)${foundStr}</span>`;
+                } else {
+                    const finalRes = await fetch(`${API}/oob/results`);
+                    const finalData = await finalRes.json();
+                    renderResults(finalData);
+
+                    const foundStr = status.recheck_found > 0
+                        ? ` &mdash; ${status.recheck_found} delayed callback${status.recheck_found !== 1 ? 's' : ''} found`
+                        : ' &mdash; no delayed callbacks';
+                    recheckBannerEl.innerHTML =
+                        '<span class="oob-recheck-dot oob-recheck-done"></span>' +
+                        `<span class="oob-recheck-text">OOB recheck complete${foundStr}</span>`;
+
+                    clearInterval(recheckTimer);
+                    recheckTimer = null;
+                    setTimeout(() => { recheckBannerEl.classList.add('hidden'); }, 30000);
+                }
+            } catch (_) {}
+        }, 15000);
+    }
+
+    function stopRecheckPoll() {
+        if (recheckTimer) { clearInterval(recheckTimer); recheckTimer = null; }
+        if (recheckBannerEl) recheckBannerEl.classList.add('hidden');
+    }
+
+    // ── Registry Info ────────────────────────────────────────
+
+    async function refreshRegistryInfo() {
+        try {
+            const res = await fetch(`${API}/oob/status`);
+            const data = await res.json();
+            if (registryInfoEl) {
+                registryInfoEl.textContent = `${data.registry_count} scan${data.registry_count !== 1 ? 's' : ''} registered`;
+            }
         } catch (_) {}
     }
 
+    // ── Results ──────────────────────────────────────────────
+
     let lastResults = [];
     let activeFilter = 'all';
-    const expandedSet = new Set(); // track expanded result indices across re-renders
+    const expandedSet = new Set();
 
     function getVisibleResults() {
         let results = lastResults;
@@ -294,7 +338,6 @@ window.InjectorUI = (() => {
                 const haystack = [
                     r.payload, r.original_param, r.target_url,
                     r.details, r.injection_point, r.injector_type,
-                    String(r.response_code),
                 ].join(' ').toLowerCase();
                 return haystack.includes(textFilter);
             });
@@ -303,14 +346,11 @@ window.InjectorUI = (() => {
     }
 
     function renderResults(results) {
-        if (results !== lastResults) {
-            lastResults = results;
-        }
-
+        if (results !== lastResults) lastResults = results;
         if (scanToolbar) scanToolbar.classList.toggle('hidden', !lastResults.length);
 
         if (!lastResults.length) {
-            resultsEl.innerHTML = '<p class="placeholder-text">No results yet</p>';
+            resultsEl.innerHTML = '<p class="placeholder-text">No OOB results yet</p>';
             return;
         }
 
@@ -320,11 +360,11 @@ window.InjectorUI = (() => {
 
         const btnCls = (f) => `scan-filter-btn${activeFilter === f ? ' active' : ''}`;
         const summary = `<div class="scan-summary">
-            <span>${lastResults.length} tests | <span style="color:var(--danger)">${vulns.length} vulns</span>${textFilter ? ` | <span style="color:var(--accent)">${filtered.length} matching</span>` : ''}</span>
+            <span>${lastResults.length} tests | <span style="color:var(--danger)">${vulns.length} callbacks confirmed</span>${textFilter ? ` | <span style="color:var(--accent)">${filtered.length} matching</span>` : ''}</span>
             <span class="scan-filters">
                 <button class="${btnCls('all')}" data-filter="all">All (${lastResults.length})</button>
-                <button class="${btnCls('vuln')}" data-filter="vuln">Vulnerable (${vulns.length})</button>
-                <button class="${btnCls('safe')}" data-filter="safe">Safe (${safe.length})</button>
+                <button class="${btnCls('vuln')}" data-filter="vuln">Confirmed (${vulns.length})</button>
+                <button class="${btnCls('safe')}" data-filter="safe">Waiting (${safe.length})</button>
             </span>
         </div>`;
 
@@ -333,32 +373,26 @@ window.InjectorUI = (() => {
             const confCls = `confidence-${r.confidence}`;
             const key = r.id || `${r.payload}_${r.original_param}_${i}`;
             const isOpen = expandedSet.has(key);
-            const isOob = (r.injector_type || '').startsWith('oob:');
-            const oobBadge = isOob && r.is_vulnerable ? '<span class="oob-badge">OOB Confirmed</span>' : '';
-            const oobTypeBadge = isOob ? `<span class="scan-badge">${esc(r.injector_type)}</span>` : '';
+            const isDelayed = (r.details || '').includes('delayed');
+            const confirmedBadge = r.is_vulnerable
+                ? `<span class="oob-badge">${isDelayed ? 'Delayed Callback' : 'OOB Confirmed'}</span>`
+                : '';
+            const typeBadge = `<span class="scan-badge">${esc(r.injector_type)}</span>`;
+
             return `<div class="scan-entry ${cls}" data-key="${esc(String(key))}">
                 <div class="scan-header">
                     <span class="scan-payload" title="${esc(r.payload)}">${esc(r.payload)}</span>
-                    ${oobBadge}
-                    ${oobTypeBadge}
+                    ${confirmedBadge}
+                    ${typeBadge}
                     <span class="scan-badge">[${esc(r.injection_point)}] ${esc(r.original_param)}</span>
-                    ${!isOob ? `<span class="scan-badge">${r.response_code}</span>` : ''}
-                    ${!isOob ? `<span class="scan-badge">${r.response_time_ms}ms</span>` : ''}
-                    <span class="scan-confidence ${confCls}">${r.is_vulnerable ? r.confidence : 'safe'}</span>
+                    <span class="scan-confidence ${confCls}">${r.is_vulnerable ? r.confidence : 'waiting'}</span>
                 </div>
                 <div class="scan-details">${esc(r.details)}</div>
-                <div class="scan-response-toggle">${isOpen ? '▾ Hide Details' : '▸ Show Details'}</div>
+                <div class="scan-response-toggle">${isOpen ? '\u25be Hide Details' : '\u25b8 Show Details'}</div>
                 <div class="scan-response ${isOpen ? '' : 'hidden'}">
                     <div class="scan-detail-row"><strong>URL:</strong> ${esc(r.target_url)}</div>
                     <div class="scan-detail-row"><strong>Point:</strong> [${esc(r.injection_point)}] ${esc(r.original_param)}</div>
                     <div class="scan-detail-row"><strong>Payload:</strong> ${esc(r.payload)}</div>
-                    <div class="scan-detail-row"><strong>Status:</strong> ${r.response_code} &nbsp; <strong>Time:</strong> ${r.response_time_ms}ms</div>
-                    <div class="scan-detail-row"><strong>Request Headers:</strong></div>
-                    <pre class="scan-response-body">${esc(r.request_headers || '(none)')}</pre>
-                    <div class="scan-detail-row"><strong>Request Body:</strong></div>
-                    <pre class="scan-response-body">${esc(r.request_body || '(empty)')}</pre>
-                    <div class="scan-detail-row"><strong>Response Body:</strong></div>
-                    <pre class="scan-response-body">${esc(r.response_body || '(empty)')}</pre>
                 </div>
             </div>`;
         }).join('');
@@ -373,7 +407,7 @@ window.InjectorUI = (() => {
             });
         });
 
-        // Expand/collapse details — persist state across re-renders
+        // Expand/collapse
         resultsEl.querySelectorAll('.scan-response-toggle').forEach(toggle => {
             toggle.addEventListener('click', () => {
                 const entry = toggle.closest('.scan-entry');
@@ -381,50 +415,33 @@ window.InjectorUI = (() => {
                 const detail = toggle.nextElementSibling;
                 const open = !detail.classList.contains('hidden');
                 detail.classList.toggle('hidden');
-                toggle.textContent = open ? '▸ Show Details' : '▾ Hide Details';
+                toggle.textContent = open ? '\u25b8 Show Details' : '\u25be Hide Details';
                 if (open) { expandedSet.delete(key); } else { expandedSet.add(key); }
-            });
-        });
-
-        // Right-click context menu on scan entries
-        resultsEl.querySelectorAll('.scan-entry').forEach(el => {
-            el.addEventListener('contextmenu', (ev) => {
-                ev.preventDefault();
-                const key = el.dataset.key;
-                const r = filtered.find((_, i) => {
-                    const k = _.id || `${_.payload}_${_.original_param}_${i}`;
-                    return String(k) === key;
-                });
-                if (!r) return;
-                _showScanCtxMenu(ev.clientX, ev.clientY, r);
             });
         });
     }
 
-    // ── Key Picker ─────────────────────────────────────────────
+    // ── Key Picker ───────────────────────────────────────────
 
     function refreshKeyPicker() {
-        // Determine which injection points are checked
         const active = new Set();
-        document.querySelectorAll('#injection-points input[type="checkbox"]:checked')
+        document.querySelectorAll('#oob-injection-points input[type="checkbox"]:checked')
             .forEach(cb => active.add(cb.value));
 
-        // Remember previous selections so toggling a checkbox doesn't reset choices
         const prev = new Set();
-        keyPickerEl.querySelectorAll('input[type="checkbox"]:checked').forEach(c => prev.add(c.dataset.source + ':' + c.dataset.key));
+        keyPickerEl.querySelectorAll('input[type="checkbox"]:checked')
+            .forEach(c => prev.add(c.dataset.source + ':' + c.dataset.key));
 
         const keys = [];
 
-        // Paths — only if "paths" checked
         if (active.has('paths') && urlEl.value) {
             try {
                 const u = new URL(urlEl.value);
-                const segments = u.pathname.split('/').filter(Boolean);
-                segments.forEach(seg => keys.push({ source: 'path', key: '/' + seg }));
+                u.pathname.split('/').filter(Boolean).forEach(seg =>
+                    keys.push({ source: 'path', key: '/' + seg }));
             } catch (_) {}
         }
 
-        // Params — only if "params" checked
         if (active.has('params')) {
             try {
                 const p = paramsEl.value ? JSON.parse(paramsEl.value) : {};
@@ -432,7 +449,6 @@ window.InjectorUI = (() => {
             } catch (_) {}
         }
 
-        // Headers — only if "headers" checked
         if (active.has('headers')) {
             const skip = new Set(['host', 'content-type', 'content-length', 'transfer-encoding']);
             try {
@@ -443,23 +459,19 @@ window.InjectorUI = (() => {
             } catch (_) {}
         }
 
-        // Body — only if "body" checked
         if (active.has('body') && bodyEl.value.trim()) {
             let parsed = false;
             try {
                 const b = JSON.parse(bodyEl.value);
                 if (b && typeof b === 'object' && !Array.isArray(b)) {
-                    walkKeys(b, '', keys);
+                    _walkKeys(b, '', keys);
                     parsed = true;
                 }
             } catch (_) {}
-            // Non-JSON or non-object body → offer the whole body as a single target
-            if (!parsed) {
-                keys.push({ source: 'body', key: 'body' });
-            }
+            if (!parsed) keys.push({ source: 'body', key: 'body' });
         }
 
-        if (keys.length === 0) {
+        if (!keys.length) {
             keyPickerGroup.style.display = 'none';
             keyPickerEl.innerHTML = '';
             return;
@@ -468,8 +480,6 @@ window.InjectorUI = (() => {
         keyPickerGroup.style.display = '';
         const isFirstRender = prev.size === 0;
 
-        // Auth-related keys that should default to UNCHECKED to avoid
-        // accidentally injecting into authentication tokens
         const AUTH_KEYS = new Set([
             'jwt', 'token', 'idtoken', 'id_token', 'access_token',
             'accesstoken', 'refresh_token', 'refreshtoken', 'auth',
@@ -478,7 +488,6 @@ window.InjectorUI = (() => {
             'csrftoken', 'csrf_token', 'x-csrf-token',
         ]);
 
-        // Group keys by source
         const grouped = {};
         keys.forEach(({ source, key }) => {
             if (!grouped[source]) grouped[source] = [];
@@ -502,7 +511,6 @@ window.InjectorUI = (() => {
         html += '</tbody></table>';
         keyPickerEl.innerHTML = html;
 
-        // Click anywhere on a row to toggle its checkbox
         keyPickerEl.querySelectorAll('tr').forEach(row => {
             const cb = row.querySelector('input[type="checkbox"]');
             if (!cb) return;
@@ -514,40 +522,18 @@ window.InjectorUI = (() => {
         });
     }
 
-    function walkKeys(obj, prefix, out) {
+    function _walkKeys(obj, prefix, out) {
         for (const [k, v] of Object.entries(obj)) {
             const path = prefix ? `${prefix}.${k}` : k;
             if (v && typeof v === 'object' && !Array.isArray(v)) {
-                walkKeys(v, path, out);
+                _walkKeys(v, path, out);
             } else {
                 out.push({ source: 'body', key: path });
             }
         }
     }
 
-    // ── Context menu on scan results ──────────────────────
-    function _showScanCtxMenu(x, y, r) {
-        let hdrs = {};
-        try { hdrs = typeof r.request_headers === 'string' ? JSON.parse(r.request_headers) : (r.request_headers || {}); } catch (_) {}
-
-        let fullUrl = r.target_url || '';
-        if (r.injection_point === 'params') {
-            let params = {};
-            try { params = paramsEl.value ? JSON.parse(paramsEl.value) : {}; } catch (_) {}
-            params[r.original_param] = r.payload;
-            const qs = new URLSearchParams(params).toString();
-            if (qs) fullUrl += '?' + qs;
-        }
-
-        SendTo.showContextMenu(x, y, {
-            method: methodEl.value || 'POST',
-            url: fullUrl,
-            headers: hdrs,
-            body: r.request_body || '',
-            request_headers: hdrs,
-            request_body: r.request_body || '',
-        }, 'injector');
-    }
+    // ── Helpers ──────────────────────────────────────────────
 
     function esc(s) {
         const d = document.createElement('div');
@@ -556,11 +542,16 @@ window.InjectorUI = (() => {
     }
 
     async function clearHistory() {
-        try { await fetch(`${API}/scan/history`, { method: 'DELETE' }); } catch (_) {}
+        try { await fetch(`${API}/oob/results`, { method: 'DELETE' }); } catch (_) {}
         lastResults = [];
         expandedSet.clear();
-        resultsEl.innerHTML = '<p class="placeholder-text">No results yet</p>';
+        resultsEl.innerHTML = '<p class="placeholder-text">No OOB results yet</p>';
     }
 
-    return { init, loadFromLog, populateFromLog: loadFromLog, loadHistory, clearHistory, getVisibleResults };
+    async function clearRegistry() {
+        try { await fetch(`${API}/oob/registry`, { method: 'DELETE' }); } catch (_) {}
+        refreshRegistryInfo();
+    }
+
+    return { init, loadHistory, loadFromLog, clearHistory, clearRegistry };
 })();
