@@ -7,8 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import QUEUE_POLL_INTERVAL, QUEUE_POLL_ERROR_DELAY
 from proxy.proxy_manager import ProxyManager
-from crawler.spider import Spider
-from api.routes import router, set_spider, get_active_workspace
+from api.routes import router, get_active_workspace, set_intercept_state
 from api.websocket import ws_router, manager
 from storage.db import init_db, save_request_log
 
@@ -22,21 +21,23 @@ log = logging.getLogger(__name__)
 
 # ── Shared instances ───────────────────────────────────────────────
 proxy = ProxyManager(workspace_getter=get_active_workspace)
-spider = Spider()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start proxy + queue poller on boot, tear down on shutdown."""
-    await init_db()
-    log.info("database initialised")
-
+    # Start proxy thread first — mitmproxy imports happen in the background
+    # thread while we init the database in parallel.
     try:
         proxy.start()
     except Exception as e:
         log.error("failed to start proxy: %s", e)
 
-    set_spider(spider)
+    await init_db()
+    log.info("database initialised")
+
+    # Spider is created lazily on first crawl request (defers playwright import)
+    set_intercept_state(proxy.intercept_state)
     poll_task = asyncio.create_task(_poll_proxy_queue())
     yield
     proxy.stop()
@@ -54,6 +55,18 @@ async def _poll_proxy_queue() -> None:
         try:
             while not proxy.log_queue.empty():
                 entry = proxy.log_queue.get_nowait()
+
+                # Intercept notifications are not log entries — broadcast and skip DB
+                if entry.get("_intercept_notification"):
+                    pf = proxy.intercept_state.get_pending(entry["flow_id"])
+                    if pf:
+                        flow_data = proxy.intercept_state._serialize(pf)
+                        await manager.broadcast({
+                            "type": "intercepted_flow",
+                            "data": flow_data,
+                        })
+                    continue
+
                 await save_request_log(entry)
                 await manager.broadcast({"type": "request_log", "data": entry})
             await asyncio.sleep(QUEUE_POLL_INTERVAL)

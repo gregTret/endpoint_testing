@@ -1,13 +1,13 @@
 const { app, BrowserWindow, BrowserView, ipcMain, Menu } = require('electron');
 const path = require('path');
-const { spawn, execSync } = require('child_process');
+const { spawn, exec, execSync } = require('child_process');
 const http = require('http');
 
 // ── Configuration ──────────────────────────────────────────────────
 const PROXY_HOST = '127.0.0.1';
 const PROXY_PORT = 8080;
 const BACKEND_PORT = 8000;
-let TOOL_PANEL_WIDTH = 520;
+let TOOL_PANEL_WIDTH = 620;
 const NAV_BAR_HEIGHT = 52;
 const IS_WIN = process.platform === 'win32';
 
@@ -42,41 +42,57 @@ const PYTHON = findPython();
 
 // ── Backend lifecycle ──────────────────────────────────────────────
 
+/**
+ * Kill anything bound to the given port (async, non-blocking).
+ * Returns a Promise that resolves when cleanup is done.
+ */
 function freePort(port) {
-    // Kill anything already bound to this port before we start
-    try {
+    return new Promise((resolve) => {
         if (IS_WIN) {
-            const out = execSync(
+            exec(
                 `netstat -ano | findstr ":${port}" | findstr "LISTENING"`,
-                { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] },
+                { encoding: 'utf-8' },
+                (err, stdout) => {
+                    if (err || !stdout.trim()) return resolve();
+                    const pids = new Set();
+                    for (const line of stdout.trim().split('\n')) {
+                        const pid = line.trim().split(/\s+/).pop();
+                        if (pid && pid !== '0') pids.add(pid);
+                    }
+                    let remaining = pids.size;
+                    if (remaining === 0) return resolve();
+                    for (const pid of pids) {
+                        console.log(`[Startup] killing stale process on port ${port} (PID ${pid})`);
+                        exec(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore' }, () => {
+                            if (--remaining <= 0) resolve();
+                        });
+                    }
+                },
             );
-            const pids = new Set();
-            for (const line of out.trim().split('\n')) {
-                const pid = line.trim().split(/\s+/).pop();
-                if (pid && pid !== '0') pids.add(pid);
-            }
-            for (const pid of pids) {
-                console.log(`[Startup] killing stale process on port ${port} (PID ${pid})`);
-                try { execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore' }); } catch (_) {}
-            }
         } else {
-            const out = execSync(
+            exec(
                 `lsof -ti :${port}`,
-                { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] },
+                { encoding: 'utf-8' },
+                (err, stdout) => {
+                    if (err || !stdout.trim()) return resolve();
+                    const pids = stdout.trim().split('\n').filter(Boolean);
+                    let remaining = pids.length;
+                    if (remaining === 0) return resolve();
+                    for (const pid of pids) {
+                        console.log(`[Startup] killing stale process on port ${port} (PID ${pid})`);
+                        exec(`kill -9 ${pid}`, () => {
+                            if (--remaining <= 0) resolve();
+                        });
+                    }
+                },
             );
-            for (const pid of out.trim().split('\n').filter(Boolean)) {
-                console.log(`[Startup] killing stale process on port ${port} (PID ${pid})`);
-                try { execSync(`kill -9 ${pid}`, { stdio: 'ignore' }); } catch (_) {}
-            }
         }
-    } catch (_) {
-        // No process on port — good
-    }
+    });
 }
 
-function startBackend() {
-    freePort(BACKEND_PORT);
-    freePort(PROXY_PORT);
+async function startBackend() {
+    // Clean up both ports in parallel
+    await Promise.all([freePort(BACKEND_PORT), freePort(PROXY_PORT)]);
 
     const backendDir = path.join(__dirname, '..', 'backend');
     pythonProcess = spawn(
@@ -97,6 +113,7 @@ function createWindow() {
         height: 950,
         minWidth: 1200,
         minHeight: 700,
+        show: false,
         backgroundColor: '#0d1117',
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
@@ -107,6 +124,11 @@ function createWindow() {
     });
 
     mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+
+    mainWindow.once('ready-to-show', () => {
+        mainWindow.maximize();
+        mainWindow.show();
+    });
 
     mainWindow.on('resize', updateBounds);
     mainWindow.on('maximize', () => setTimeout(updateBounds, 80));
@@ -322,9 +344,10 @@ ipcMain.on('hide-browser', () => {
 
 app.commandLine.appendSwitch('ignore-certificate-errors');
 
-app.whenReady().then(() => {
-    startBackend();
-    setTimeout(createWindow, 2000); // give backend a moment to boot
+app.whenReady().then(async () => {
+    // Show window immediately (workspace launcher handles backend-not-ready gracefully)
+    createWindow();
+    await startBackend();
 });
 
 function killBackend() {

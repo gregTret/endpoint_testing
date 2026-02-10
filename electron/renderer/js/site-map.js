@@ -248,8 +248,8 @@ window.SiteMap = (() => {
         const items = [
             { label: 'Open in Browser', action: () => { window.electronAPI.navigate(url); document.getElementById('url-input').value = url; } },
             { label: 'Copy URL', action: () => navigator.clipboard.writeText(url) },
-            { label: 'Scan with Injector', action: () => { InjectorUI.loadFromLog({ url, method: 'GET', request_headers: {}, request_body: '' }); switchTab('injector'); } },
-            { label: 'Add Credentials for Site', action: () => { Credentials.openWithSite(host || new URL(url).host); switchTab('settings'); } },
+            { label: 'Scan with Injector', action: () => { SendTo.sendTo('injector', { url, method: 'GET', headers: {}, body: '', request_headers: {}, request_body: '' }); } },
+            { label: 'Add Credentials for Site', action: () => { Credentials.openWithSite(host || new URL(url).host); _switchTab('settings'); } },
             { label: 'Start Crawl from Here', action: () => { crawlBtn.disabled = true; stopBtn.disabled = false; statusEl.textContent = 'Starting...'; fetch(`${API}/crawl?url=${encodeURIComponent(url)}&max_depth=5&max_pages=100`, { method: 'POST' }).then(pollCrawlStatus); } },
             { label: 'Export Known Endpoints', action: () => {
                 let prefix;
@@ -421,7 +421,7 @@ window.SiteMap = (() => {
         return item;
     }
 
-    function switchTab(tabName) {
+    function _switchTab(tabName) {
         document.querySelectorAll('#tab-bar .tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabName));
         document.querySelectorAll('.tab-pane').forEach(p => p.classList.toggle('active', p.dataset.tab === tabName));
     }

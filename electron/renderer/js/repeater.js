@@ -18,6 +18,11 @@ window.Repeater = (() => {
 
         sendBtn.addEventListener('click', send);
         loadHistory();
+
+        SendTo.register('repeater', {
+            label: 'Repeater',
+            receive(data) { addRequest(data); },
+        });
     }
 
     /** Load persisted history from backend */
@@ -233,36 +238,14 @@ window.Repeater = (() => {
     }
 
     function _showCtxMenu(x, y, entry) {
-        _closeCtxMenu();
-        const menu = document.createElement('div');
-        menu.className = 'ctx-menu';
-        menu.style.left = x + 'px';
-        menu.style.top  = y + 'px';
-        menu.innerHTML = `
-            <div class="ctx-menu-item" data-action="injector">Send to Injector</div>
-        `;
-        menu.querySelector('[data-action="injector"]').addEventListener('click', () => {
-            if (InjectorUI && InjectorUI.populateFromLog) {
-                InjectorUI.populateFromLog({
-                    method: entry.method,
-                    url: entry.url,
-                    request_headers: entry.headers || {},
-                    request_body: entry.body || '',
-                });
-            }
-            document.querySelectorAll('#tab-bar .tab').forEach(t =>
-                t.classList.toggle('active', t.dataset.tab === 'injector'));
-            document.querySelectorAll('.tab-pane').forEach(p =>
-                p.classList.toggle('active', p.dataset.tab === 'injector'));
-            _closeCtxMenu();
-        });
-        document.body.appendChild(menu);
-        const dismiss = () => { _closeCtxMenu(); document.removeEventListener('click', dismiss); };
-        setTimeout(() => document.addEventListener('click', dismiss), 0);
-    }
-
-    function _closeCtxMenu() {
-        document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
+        SendTo.showContextMenu(x, y, {
+            method: entry.method,
+            url: entry.url,
+            headers: entry.headers || {},
+            body: entry.body || '',
+            request_headers: entry.headers || {},
+            request_body: entry.body || '',
+        }, 'repeater');
     }
 
     return { init, addRequest, clearAll, loadHistory };
