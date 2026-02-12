@@ -35,7 +35,7 @@ SCAN_RESPONSE_CAP = 10_000     # max chars kept per scan response
 REPLAY_TIMEOUT = 15.0
 
 # ── OOB Callback ─────────────────────────────────────────────────
-OOB_DEFAULT_URL = "https://buck-permalink-asia-endif.trycloudflare.com"
+OOB_DEFAULT_URL = "https://hay-editorial-sole-draw.trycloudflare.com"
 OOB_POLL_INTERVAL = 2.0        # seconds between polls
 OOB_POLL_DURATION = 15.0       # total seconds to poll after injection
 

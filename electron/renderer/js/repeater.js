@@ -181,17 +181,17 @@ window.Repeater = (() => {
         })
         .then(r => r.json())
         .then(data => {
-            responseEl.innerHTML = `
-                <div class="repeater-response-block">
-                    <div class="scan-header">
-                        <span class="scan-badge">${data.status_code || data.error || '?'}</span>
-                        <span class="scan-payload">${esc(method)} ${esc(url)}</span>
-                    </div>
-                    <div class="scan-detail-row"><strong>Response Headers:</strong></div>
-                    <pre class="scan-response-body">${esc(JSON.stringify(data.headers || {}, null, 2))}</pre>
-                    <div class="scan-detail-row"><strong>Response Body:</strong></div>
-                    <pre class="scan-response-body">${esc(data.body || data.error || '(empty)')}</pre>
-                </div>`;
+            responseEl.innerHTML =
+`<div class="repeater-response-block">
+<div class="scan-header">
+<span class="scan-badge">${data.status_code || data.error || '?'}</span>
+<span class="scan-payload">${esc(method)} ${esc(url)}</span>
+</div>
+<div class="scan-detail-row"><strong>Response Headers:</strong></div>
+${EPTUtils.bodyPreBlock(JSON.stringify(data.headers || {}, null, 2))}
+<div class="scan-detail-row"><strong>Response Body:</strong></div>
+${EPTUtils.bodyPreBlock(data.body || data.error || '')}
+</div>`;
         })
         .catch(e => {
             responseEl.innerHTML = `<p class="placeholder-text" style="color:var(--danger)">Error: ${e.message}</p>`;

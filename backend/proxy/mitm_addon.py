@@ -86,7 +86,15 @@ class InterceptAddon:
                     flow.request.headers.clear()
                     for k, v in mods["headers"].items():
                         flow.request.headers[k] = v
-                if "body" in mods:
+                if "multipart_parts" in mods:
+                    # Reconstruct multipart body from edited parts (raw bytes)
+                    from proxy.multipart import rebuild_multipart
+                    boundary = mods.get("multipart_boundary", "")
+                    if boundary:
+                        flow.request.content = rebuild_multipart(
+                            mods["multipart_parts"], boundary
+                        )
+                elif "body" in mods:
                     flow.request.set_text(mods["body"])
 
     async def response(self, flow: http.HTTPFlow) -> None:

@@ -147,6 +147,21 @@ class InterceptState:
         if pf.phase == "request":
             data["headers"] = dict(flow.request.headers)
             data["body"] = req_body[:LOG_BODY_CAP]
+
+            # Detect multipart/form-data and parse into structured parts
+            content_type = flow.request.headers.get("content-type", "")
+            try:
+                from proxy.multipart import is_multipart, parse_multipart, extract_boundary
+
+                if is_multipart(content_type):
+                    parts = parse_multipart(content_type, flow.request.content)
+                    data["is_multipart"] = True
+                    data["multipart_parts"] = parts
+                    data["multipart_boundary"] = extract_boundary(content_type)
+                else:
+                    data["is_multipart"] = False
+            except Exception:
+                data["is_multipart"] = False
         elif pf.phase == "response":
             data["request_headers"] = dict(flow.request.headers)
             data["request_body"] = req_body[:LOG_BODY_CAP]

@@ -109,9 +109,26 @@
                     <label>Headers</label>
                     <textarea id="intercept-headers" rows="6"></textarea>
                 </div>
-                <div class="form-group">
+                <div class="form-group" id="intercept-body-group">
                     <label>Body</label>
                     <textarea id="intercept-body" rows="6"></textarea>
+                </div>
+                <!-- Multipart File Upload Editor (shown for multipart/form-data requests) -->
+                <div id="intercept-multipart-section" class="hidden">
+                    <div class="form-group">
+                        <label>
+                            Multipart Parts
+                            <span class="badge badge-request" style="margin-left:6px">FILE UPLOAD</span>
+                        </label>
+                        <div id="intercept-multipart-parts"></div>
+                        <div class="multipart-preset-row">
+                            <button id="btn-multipart-add-part" class="btn-small">+ Add Part</button>
+                            <select id="multipart-preset-select">
+                                <option value="">Apply Preset...</option>
+                            </select>
+                            <button id="btn-multipart-apply-preset" class="btn-small">Apply</button>
+                        </div>
+                    </div>
                 </div>
                 <div id="intercept-response-section" class="hidden">
                     <div class="form-group">
@@ -141,9 +158,17 @@
         <!-- Injector -->
         <div class="tab-pane" data-tab="injector">
             <div id="injector-config">
-                <div class="form-group">
-                    <label>Target URL</label>
+                <div class="form-group" id="bulk-url-group">
+                    <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+                        <label style="margin:0">Target URL</label>
+                        <button class="btn-small" id="btn-toggle-bulk" style="font-size:10px;padding:1px 6px">Bulk URLs</button>
+                        <button class="btn-small" id="btn-paste-raw-http" style="font-size:10px;padding:1px 6px" title="Paste a raw HTTP request from clipboard">Paste Raw HTTP</button>
+                    </div>
                     <input type="text" id="inject-url" placeholder="https://target.com/api/endpoint">
+                    <div id="bulk-url-section" class="hidden" style="margin-top:4px">
+                        <textarea id="inject-bulk-urls" rows="4" placeholder="Paste one URL per line. Each URL will be scanned with the same settings."></textarea>
+                        <p class="hint" style="margin:2px 0 0;font-size:10px;color:var(--text-dim)">Each URL scanned sequentially. Leave empty to use the single URL above.</p>
+                    </div>
                 </div>
                 <div class="form-row">
                     <div class="form-group half">
@@ -157,7 +182,6 @@
                         <label>Injector</label>
                         <select id="inject-type">
                             <option value="quick">Quick Scan</option>
-                            <option value="oob">OOB (Blind)</option>
                             <option value="sql">SQL</option>
                             <option value="aql">AQL</option>
                             <option value="xss">XSS</option>
@@ -192,6 +216,10 @@
                 </div>
                 <div class="form-group" id="key-picker-group" style="display:none">
                     <label>Target Keys <span class="hint">(uncheck to exclude from injection)</span></label>
+                    <div class="key-picker-actions">
+                        <button class="btn-small" id="btn-key-select-all">Select All</button>
+                        <button class="btn-small" id="btn-key-deselect-all">Deselect All</button>
+                    </div>
                     <div id="key-picker" class="key-picker-table"></div>
                 </div>
                 <div class="scan-controls">
@@ -251,6 +279,10 @@
                 </div>
                 <div class="form-group" id="oob-key-picker-group" style="display:none">
                     <label>Target Keys <span class="hint">(uncheck to exclude from injection)</span></label>
+                    <div class="key-picker-actions">
+                        <button class="btn-small" id="btn-oob-key-select-all">Select All</button>
+                        <button class="btn-small" id="btn-oob-key-deselect-all">Deselect All</button>
+                    </div>
                     <div id="oob-key-picker" class="key-picker-table"></div>
                 </div>
                 <div class="scan-controls">
@@ -297,6 +329,37 @@
                     </div>
                     <div id="repeater-response" class="scrollable"></div>
                 </div>
+            </div>
+        </div>
+
+        <!-- AI Analysis -->
+        <div class="tab-pane" data-tab="ai">
+            <div id="ai-config" class="ai-config-panel">
+                <div class="form-row" style="gap:8px;align-items:flex-end">
+                    <div class="form-group half" style="margin:0">
+                        <label>Model</label>
+                        <select id="ai-model">
+                            <option value="opus" selected>Opus (most capable)</option>
+                            <option value="sonnet">Sonnet (balanced)</option>
+                            <option value="haiku">Haiku (fastest)</option>
+                        </select>
+                    </div>
+                    <div class="form-group half" style="margin:0">
+                        <label>Host Filter</label>
+                        <select id="ai-host-filter">
+                            <option value="">All traffic</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row" style="gap:6px;margin-top:8px;align-items:center">
+                    <button id="btn-ai-preview" class="btn-small" style="height:32px;padding:0 14px">Preview</button>
+                    <button id="btn-ai-analyze" class="btn-primary" style="width:auto;padding:0 20px;height:32px">Analyze</button>
+                    <span id="ai-preview-info" class="status-label" style="flex:1"></span>
+                </div>
+                <div id="ai-progress" class="hidden" style="margin-top:8px"></div>
+            </div>
+            <div id="ai-results" class="scrollable" style="flex:1;padding:10px">
+                <p class="placeholder-text" style="padding:20px;text-align:center">No analysis results yet. Click Preview, then Analyze to scan your captured traffic.</p>
             </div>
         </div>
 
@@ -406,6 +469,11 @@
                                 <td class="data-mgmt-label">OOB Registry</td>
                                 <td class="data-mgmt-desc">In-memory scan keys for callback checking</td>
                                 <td class="data-mgmt-action"><button id="btn-clear-oob-registry" class="btn-small danger">Clear</button></td>
+                            </tr>
+                            <tr>
+                                <td class="data-mgmt-label">AI Analysis</td>
+                                <td class="data-mgmt-desc">Saved Claude analysis results</td>
+                                <td class="data-mgmt-action"><button id="btn-clear-ai-history" class="btn-small danger">Clear</button></td>
                             </tr>
                         </tbody>
                     </table>
@@ -578,15 +646,18 @@
     </div>
 </div>
 
+<script src="js/utils.js"></script>
 <script src="js/workspace.js"></script>
 <script src="js/send-to.js"></script>
 <script src="js/log-viewer.js"></script>
 <script src="js/site-map.js"></script>
+<script src="js/upload-presets.js"></script>
 <script src="js/intercept.js"></script>
 <script src="js/injector-ui.js"></script>
 <script src="js/oob-ui.js"></script>
 <script src="js/repeater.js"></script>
 <script src="js/credentials.js"></script>
+<script src="js/ai-analysis.js"></script>
 <script src="js/analytics.js"></script>
 <script src="js/payload-editor.js"></script>
 <script src="js/app.js"></script>

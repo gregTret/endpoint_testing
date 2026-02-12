@@ -11,6 +11,8 @@ window.InjectorUI = (() => {
     let keyPickerGroup, keyPickerEl;
     let scanToolbar, textFilterEl, analyzeBtn;
     let textFilter = '';
+    let bulkUrlsEl = null;
+    let bulkMode = false;
 
     function init() {
         urlEl      = document.getElementById('inject-url');
@@ -64,6 +66,43 @@ window.InjectorUI = (() => {
         document.querySelectorAll('#injection-points input[type="checkbox"]')
             .forEach(cb => cb.addEventListener('change', refreshKeyPicker));
 
+        // Select All / Deselect All for key picker
+        document.getElementById('btn-key-select-all').addEventListener('click', () => {
+            keyPickerEl.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = true);
+        });
+        document.getElementById('btn-key-deselect-all').addEventListener('click', () => {
+            keyPickerEl.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
+        });
+
+        // Paste Raw HTTP — parse clipboard into form fields
+        document.getElementById('btn-paste-raw-http').addEventListener('click', async () => {
+            let raw;
+            try {
+                raw = await navigator.clipboard.readText();
+            } catch (_) {
+                raw = prompt('Paste raw HTTP request:');
+            }
+            if (!raw) return;
+            const parsed = EPTUtils.parseRawHttp(raw);
+            if (!parsed) { alert('Could not parse raw HTTP request'); return; }
+            urlEl.value = parsed.url || '';
+            methodEl.value = parsed.method || 'GET';
+            paramsEl.value = Object.keys(parsed.params).length
+                ? JSON.stringify(parsed.params, null, 2) : '';
+            headersEl.value = Object.keys(parsed.headers).length
+                ? JSON.stringify(parsed.headers, null, 2) : '';
+            bodyEl.value = parsed.body || '';
+            refreshKeyPicker();
+        });
+
+        // Bulk URL toggle
+        bulkUrlsEl = document.getElementById('inject-bulk-urls');
+        document.getElementById('btn-toggle-bulk').addEventListener('click', (e) => {
+            bulkMode = !bulkMode;
+            document.getElementById('bulk-url-section').classList.toggle('hidden', !bulkMode);
+            e.target.textContent = bulkMode ? 'Single URL' : 'Bulk URLs';
+        });
+
         // Load saved scan history for this workspace
         loadHistory();
 
@@ -88,6 +127,12 @@ window.InjectorUI = (() => {
         if (paramsEl) paramsEl.value = '';
         if (headersEl) headersEl.value = '';
         if (bodyEl) bodyEl.value = '';
+        if (bulkUrlsEl) bulkUrlsEl.value = '';
+        bulkMode = false;
+        const bulkSection = document.getElementById('bulk-url-section');
+        if (bulkSection) bulkSection.classList.add('hidden');
+        const bulkBtn = document.getElementById('btn-toggle-bulk');
+        if (bulkBtn) bulkBtn.textContent = 'Bulk URLs';
         if (keyPickerGroup) keyPickerGroup.style.display = 'none';
         if (keyPickerEl) keyPickerEl.innerHTML = '';
         if (scanToolbar) scanToolbar.classList.add('hidden');
@@ -123,21 +168,21 @@ window.InjectorUI = (() => {
                 body: JSON.stringify(payload),
             });
             const data = await res.json();
-            resultsEl.innerHTML = `
-                <div class="scan-entry">
-                    <div class="scan-header">
-                        <span class="scan-badge">${data.status_code}</span>
-                        <span class="scan-payload">${esc(data.request_method || payload.method)} ${esc(payload.url)}</span>
-                    </div>
-                    <div class="scan-detail-row"><strong>Request Headers Sent:</strong></div>
-                    <pre class="scan-response-body">${esc(JSON.stringify(data.request_headers || {}, null, 2))}</pre>
-                    <div class="scan-detail-row"><strong>Request Body Sent:</strong></div>
-                    <pre class="scan-response-body">${esc(data.request_body || '(empty)')}</pre>
-                    <div class="scan-detail-row"><strong>Response Headers:</strong></div>
-                    <pre class="scan-response-body">${esc(JSON.stringify(data.headers || {}, null, 2))}</pre>
-                    <div class="scan-detail-row"><strong>Response Body:</strong></div>
-                    <pre class="scan-response-body">${esc(data.body || '(empty)')}</pre>
-                </div>`;
+            resultsEl.innerHTML =
+`<div class="scan-entry">
+<div class="scan-header">
+<span class="scan-badge">${data.status_code}</span>
+<span class="scan-payload">${esc(data.request_method || payload.method)} ${esc(payload.url)}</span>
+</div>
+<div class="scan-detail-row"><strong>Request Headers Sent:</strong></div>
+${EPTUtils.bodyPreBlock(JSON.stringify(data.request_headers || {}, null, 2))}
+<div class="scan-detail-row"><strong>Request Body Sent:</strong></div>
+${EPTUtils.bodyPreBlock(data.request_body || '')}
+<div class="scan-detail-row"><strong>Response Headers:</strong></div>
+${EPTUtils.bodyPreBlock(JSON.stringify(data.headers || {}, null, 2))}
+<div class="scan-detail-row"><strong>Response Body:</strong></div>
+${EPTUtils.bodyPreBlock(data.body || '')}
+</div>`;
         } catch (e) {
             resultsEl.innerHTML = `<p class="placeholder-text" style="color:var(--danger)">Error: ${e.message}</p>`;
         }
@@ -165,7 +210,8 @@ window.InjectorUI = (() => {
         refreshKeyPicker();
     }
 
-    async function startScan() {
+    /** Build a scan config from the current form state */
+    function _buildScanConfig(targetUrl) {
         const points = [];
         document.querySelectorAll('#injection-points input:checked')
             .forEach(cb => points.push(cb.value));
@@ -176,14 +222,13 @@ window.InjectorUI = (() => {
         let headers = {};
         try { headers = headersEl.value ? JSON.parse(headersEl.value) : {}; } catch (_) {}
 
-        // Collect selected target keys from the picker
         const targetKeys = [];
         keyPickerEl.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
             targetKeys.push(cb.dataset.key);
         });
 
-        const config = {
-            target_url: urlEl.value,
+        return {
+            target_url: targetUrl,
             method: methodEl.value,
             injector_type: typeEl.value,
             params,
@@ -193,77 +238,95 @@ window.InjectorUI = (() => {
             target_keys: targetKeys.length ? targetKeys : null,
             timeout: 10.0,
         };
+    }
 
-        if (!config.target_url) { alert('Enter a target URL'); return; }
+    async function startScan() {
+        // Collect URLs — bulk mode or single
+        const urls = [];
+        if (bulkMode && bulkUrlsEl && bulkUrlsEl.value.trim()) {
+            bulkUrlsEl.value.trim().split('\n')
+                .map(l => l.trim()).filter(Boolean)
+                .forEach(u => urls.push(u));
+        }
+        if (!urls.length) {
+            if (!urlEl.value) { alert('Enter a target URL'); return; }
+            urls.push(urlEl.value);
+        }
 
         scanBtn.disabled = true;
-        scanBtn.textContent = 'Scanning...';
         pauseBtn.classList.remove('hidden');
         stopBtn.classList.remove('hidden');
         pauseBtn.textContent = 'Pause';
-        resultsEl.innerHTML = '<p class="placeholder-text">Scan in progress...</p>';
 
-        try {
-            const resp = await fetch(`${API}/scan`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(config),
-            });
-            const data = await resp.json();
-            currentScanId = data.scan_id;
-            pollResults();
-        } catch (e) {
-            resultsEl.innerHTML = `<p class="placeholder-text">Error: ${e.message}</p>`;
-            scanBtn.disabled = false;
-            scanBtn.textContent = 'Launch Scan';
+        // Run scans sequentially for each URL
+        for (let idx = 0; idx < urls.length; idx++) {
+            const label = urls.length > 1 ? `URL ${idx + 1}/${urls.length}: ` : '';
+            scanBtn.textContent = `${label}Scanning...`;
+            if (idx === 0) {
+                resultsEl.innerHTML = '<p class="placeholder-text">Scan in progress...</p>';
+            }
+
+            const config = _buildScanConfig(urls[idx]);
+
+            try {
+                const resp = await fetch(`${API}/scan`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config),
+                });
+                const data = await resp.json();
+                currentScanId = data.scan_id;
+
+                // Wait for this scan to finish before starting next
+                await _waitForScanDone(label);
+            } catch (e) {
+                resultsEl.innerHTML += `<p class="placeholder-text" style="color:var(--danger)">Error on ${esc(urls[idx])}: ${e.message}</p>`;
+            }
         }
+
+        scanBtn.disabled = false;
+        scanBtn.textContent = 'Launch Scan';
+        pauseBtn.classList.add('hidden');
+        stopBtn.classList.add('hidden');
     }
 
-    function pollResults() {
-        if (scanPollTimer) clearInterval(scanPollTimer);
+    /** Poll until the current scan finishes, updating results along the way */
+    function _waitForScanDone(label) {
+        return new Promise((resolve) => {
+            const pollingScanId = currentScanId;
+            const timer = setInterval(async () => {
+                try {
+                    const statusRes = await fetch(`${API}/scan/status`);
+                    const status = await statusRes.json();
+                    if (status.scan_id !== pollingScanId) return;
 
-        const pollingScanId = currentScanId;
-
-        scanPollTimer = setInterval(async () => {
-            try {
-                // Check if scan is still running
-                const statusRes = await fetch(`${API}/scan/status`);
-                const status = await statusRes.json();
-
-                // Make sure we're still tracking the same scan
-                if (status.scan_id !== pollingScanId) return;
-
-                // Update progress text
-                const paused = status.running && status.control === 'pause';
-                if (status.running) {
-                    const prefix = paused ? 'Paused' : 'Scanning...';
-                    scanBtn.textContent = `${prefix} (${status.completed}/${status.total})`;
-                }
-
-                // Skip re-rendering while paused — no new results, and
-                // rebuilding the DOM closes any expanded detail panels
-                if (paused) return;
-
-                // Fetch results scoped to this scan
-                const res = await fetch(`${API}/scan/results?session_id=${pollingScanId}&limit=500`);
-                const data = await res.json();
-                renderResults(data);
-
-                // Stop polling only when backend says scan is done
-                if (!status.running) {
-                    clearInterval(scanPollTimer);
-                    scanPollTimer = null;
-                    scanBtn.disabled = false;
-                    scanBtn.textContent = 'Launch Scan';
-                    pauseBtn.classList.add('hidden');
-                    stopBtn.classList.add('hidden');
-
-                    if (status.error) {
-                        resultsEl.innerHTML += `<p class="placeholder-text" style="color:var(--danger);padding:8px 10px">Scan error: ${esc(status.error)}</p>`;
+                    const paused = status.running && status.control === 'pause';
+                    if (status.running) {
+                        const prefix = paused ? 'Paused' : `${label}Scanning...`;
+                        scanBtn.textContent = `${prefix} (${status.completed}/${status.total})`;
                     }
-                }
-            } catch (_) {}
-        }, 2000);
+                    if (paused) return;
+
+                    const res = await fetch(`${API}/scan/results?session_id=${pollingScanId}&limit=500`);
+                    const data = await res.json();
+                    renderResults(data);
+
+                    if (!status.running) {
+                        clearInterval(timer);
+                        if (status.error) {
+                            resultsEl.innerHTML += `<p class="placeholder-text" style="color:var(--danger);padding:8px 10px">Scan error: ${esc(status.error)}</p>`;
+                        }
+                        // Load full workspace history so bulk results accumulate
+                        try {
+                            const histRes = await fetch(`${API}/scan/history`);
+                            const histData = await histRes.json();
+                            renderResults(histData);
+                        } catch (_) {}
+                        resolve();
+                    }
+                } catch (_) {}
+            }, 2000);
+        });
     }
 
     async function togglePause() {
@@ -336,31 +399,29 @@ window.InjectorUI = (() => {
             const isOob = (r.injector_type || '').startsWith('oob:');
             const oobBadge = isOob && r.is_vulnerable ? '<span class="oob-badge">OOB Confirmed</span>' : '';
             const oobTypeBadge = isOob ? `<span class="scan-badge">${esc(r.injector_type)}</span>` : '';
-            return `<div class="scan-entry ${cls}" data-key="${esc(String(key))}">
-                <div class="scan-header">
-                    <span class="scan-payload" title="${esc(r.payload)}">${esc(r.payload)}</span>
-                    ${oobBadge}
-                    ${oobTypeBadge}
-                    <span class="scan-badge">[${esc(r.injection_point)}] ${esc(r.original_param)}</span>
-                    ${!isOob ? `<span class="scan-badge">${r.response_code}</span>` : ''}
-                    ${!isOob ? `<span class="scan-badge">${r.response_time_ms}ms</span>` : ''}
-                    <span class="scan-confidence ${confCls}">${r.is_vulnerable ? r.confidence : 'safe'}</span>
-                </div>
-                <div class="scan-details">${esc(r.details)}</div>
-                <div class="scan-response-toggle">${isOpen ? '▾ Hide Details' : '▸ Show Details'}</div>
-                <div class="scan-response ${isOpen ? '' : 'hidden'}">
-                    <div class="scan-detail-row"><strong>URL:</strong> ${esc(r.target_url)}</div>
-                    <div class="scan-detail-row"><strong>Point:</strong> [${esc(r.injection_point)}] ${esc(r.original_param)}</div>
-                    <div class="scan-detail-row"><strong>Payload:</strong> ${esc(r.payload)}</div>
-                    <div class="scan-detail-row"><strong>Status:</strong> ${r.response_code} &nbsp; <strong>Time:</strong> ${r.response_time_ms}ms</div>
-                    <div class="scan-detail-row"><strong>Request Headers:</strong></div>
-                    <pre class="scan-response-body">${esc(r.request_headers || '(none)')}</pre>
-                    <div class="scan-detail-row"><strong>Request Body:</strong></div>
-                    <pre class="scan-response-body">${esc(r.request_body || '(empty)')}</pre>
-                    <div class="scan-detail-row"><strong>Response Body:</strong></div>
-                    <pre class="scan-response-body">${esc(r.response_body || '(empty)')}</pre>
-                </div>
-            </div>`;
+            return `<div class="scan-entry ${cls}" data-key="${esc(String(key))}">` +
+`<div class="scan-header">` +
+`<span class="scan-payload" title="${esc(r.payload)}">${esc(r.payload)}</span>` +
+oobBadge + oobTypeBadge +
+`<span class="scan-badge">[${esc(r.injection_point)}] ${esc(r.original_param)}</span>` +
+(!isOob ? `<span class="scan-badge">${r.response_code}</span>` : '') +
+(!isOob ? `<span class="scan-badge">${r.response_time_ms}ms</span>` : '') +
+`<span class="scan-confidence ${confCls}">${r.is_vulnerable ? r.confidence : 'safe'}</span>` +
+`</div>` +
+`<div class="scan-details">${esc(r.details)}</div>` +
+`<div class="scan-response-toggle">${isOpen ? '▾ Hide Details' : '▸ Show Details'}</div>` +
+`<div class="scan-response ${isOpen ? '' : 'hidden'}">` +
+`<div class="scan-detail-row"><strong>URL:</strong> ${esc(r.target_url)}</div>` +
+`<div class="scan-detail-row"><strong>Point:</strong> [${esc(r.injection_point)}] ${esc(r.original_param)}</div>` +
+`<div class="scan-detail-row"><strong>Payload:</strong> ${esc(r.payload)}</div>` +
+`<div class="scan-detail-row"><strong>Status:</strong> ${r.response_code} &nbsp; <strong>Time:</strong> ${r.response_time_ms}ms</div>` +
+`<div class="scan-detail-row"><strong>Request Headers:</strong></div>` +
+EPTUtils.bodyPreBlock(r.request_headers || '') +
+`<div class="scan-detail-row"><strong>Request Body:</strong></div>` +
+EPTUtils.bodyPreBlock(r.request_body || '') +
+`<div class="scan-detail-row"><strong>Response Body:</strong></div>` +
+EPTUtils.bodyPreBlock(r.response_body || '') +
+`</div></div>`;
         }).join('');
 
         resultsEl.innerHTML = summary + (filtered.length ? rows : '<p class="placeholder-text">No matching results</p>');

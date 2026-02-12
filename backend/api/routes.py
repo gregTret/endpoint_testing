@@ -45,8 +45,11 @@ from storage.db import (
     delete_oob_results_by_workspace,
 )
 
+from api.claude_analysis import router as ai_router
+
 log = logging.getLogger(__name__)
 router = APIRouter()
+router.include_router(ai_router)
 
 # ── Injector registry (lazy-loaded for fast startup) ──────────────
 _injectors_loaded = False
