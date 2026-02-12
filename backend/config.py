@@ -34,6 +34,15 @@ SCAN_DEFAULT_TIMEOUT = 10.0    # seconds per request
 SCAN_RESPONSE_CAP = 10_000     # max chars kept per scan response
 REPLAY_TIMEOUT = 15.0
 
+# ── Default request headers ──────────────────────────────────────
+# Applied to all outgoing requests (scans, repeater, replay).
+# Workspace settings override these.
+DEFAULT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+}
+
 # ── OOB Callback ─────────────────────────────────────────────────
 OOB_DEFAULT_URL = "https://hay-editorial-sole-draw.trycloudflare.com"
 OOB_POLL_INTERVAL = 2.0        # seconds between polls

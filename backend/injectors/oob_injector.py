@@ -17,6 +17,7 @@ import httpx
 from config import (
     OOB_DEFAULT_URL, OOB_POLL_INTERVAL, OOB_POLL_DURATION,
     SCAN_DEFAULT_TIMEOUT, SCAN_RESPONSE_CAP, PROXY_HOST, PROXY_PORT,
+    DEFAULT_HEADERS,
 )
 from injectors.base import (
     BaseInjector, _build_targets, _DROP_HEADERS, _SCAN_MARKER,
@@ -136,6 +137,16 @@ class OOBInjector(BaseInjector):
         injection_points = injection_points or ["params"]
         ctrl = control or {"signal": "run"}
         results: list[ScanResult] = []
+
+        # Merge workspace default headers under request headers
+        try:
+            from api.routes import get_default_headers
+            defaults = await get_default_headers()
+        except Exception:
+            defaults = dict(DEFAULT_HEADERS)
+        merged_headers = dict(defaults)
+        merged_headers.update(headers)
+        headers = merged_headers
 
         url, params = _normalize_url_params(url, params)
 

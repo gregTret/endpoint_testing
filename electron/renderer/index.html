@@ -373,6 +373,51 @@
             <div id="analytics-body-content" class="scrollable"></div>
         </div>
 
+        <!-- Info -->
+        <div class="tab-pane" data-tab="info">
+            <div class="info-scroll scrollable">
+
+                <div class="info-section">
+                    <div class="info-section-title">OOB Callback Server</div>
+                    <p class="info-desc">Endpoints on the out-of-band callback server. Open these in a browser to inspect received callbacks.</p>
+                    <table class="info-endpoint-table">
+                        <thead>
+                            <tr><th>Method</th><th>Endpoint</th><th>Description</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><span class="info-method method-GET">GET</span></td>
+                                <td><span class="info-url" data-oob-path="/api/health">/api/health</span></td>
+                                <td>Server health check</td>
+                            </tr>
+                            <tr>
+                                <td><span class="info-method method-GET">GET</span></td>
+                                <td><span class="info-url" data-oob-path="/api/callbacks/{key}">/api/callbacks/{key}</span></td>
+                                <td>List all callbacks received for a scan key</td>
+                            </tr>
+                            <tr>
+                                <td><span class="info-method method-GET">GET</span></td>
+                                <td><span class="info-url" data-oob-path="/api/callbacks/{key}/{token}">/api/callbacks/{key}/{token}</span></td>
+                                <td>List callbacks for a specific payload token</td>
+                            </tr>
+                            <tr>
+                                <td><span class="info-method method-DELETE">DELETE</span></td>
+                                <td><span class="info-url" data-oob-path="/api/callbacks/{key}">/api/callbacks/{key}</span></td>
+                                <td>Clear all stored callbacks for a scan key</td>
+                            </tr>
+                            <tr>
+                                <td><span class="info-method" style="background:var(--surface2);color:var(--text-dim)">ANY</span></td>
+                                <td><span class="info-url" data-oob-path="/{key}/{token}">{base}/{key}/{token}</span></td>
+                                <td>Catch-all callback receiver &mdash; payloads hit this</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p class="info-hint">URLs use the OOB server configured in Settings. Click a URL to open it, or right-click to copy.</p>
+                </div>
+
+            </div>
+        </div>
+
         <div class="tab-pane" data-tab="settings">
             <div class="settings-scroll scrollable">
 
@@ -425,6 +470,21 @@
                             <label><input type="checkbox" value="sqli" checked> Blind SQLi</label>
                         </div>
                         <p style="font-size:11px;color:var(--text-dim);margin-top:4px">Select which blind vulnerability types to test. Fewer categories = faster scans.</p>
+                    </div>
+                </div>
+
+                <!-- Default Request Headers -->
+                <div class="settings-section">
+                    <div class="settings-section-title">Request Headers</div>
+                    <p style="font-size:11px;color:var(--text-dim);margin-bottom:8px">Default headers sent with all outgoing requests (scans, repeater, replay). Per-request headers override these.</p>
+                    <div id="default-headers-editor">
+                        <div id="default-headers-rows"></div>
+                        <button id="btn-add-default-header" class="btn-small" style="margin-top:6px">+ Add Header</button>
+                    </div>
+                    <div class="form-row" style="gap:6px;margin-top:8px;align-items:center">
+                        <button id="btn-save-default-headers" class="btn-primary" style="width:auto;padding:0 16px;height:30px">Save</button>
+                        <button id="btn-reset-default-headers" class="btn-small" style="height:30px">Reset to Defaults</button>
+                        <span id="default-headers-status" class="status-label"></span>
                     </div>
                 </div>
 
@@ -542,6 +602,7 @@
 
     <!-- Detail panel (bottom drawer) -->
     <div id="detail-panel" class="collapsed">
+        <div id="detail-resize-handle"></div>
         <div id="detail-header">
             <span id="detail-title">Request Details</span>
             <button id="btn-close-detail">&#10005;</button>
@@ -632,10 +693,11 @@
         <div id="payload-editor-stats" class="payload-editor-stats"></div>
         <div id="payload-editor-list" class="scrollable payload-editor-list"></div>
         <div id="payload-add-form" class="payload-add-form hidden">
-            <textarea id="payload-add-text" rows="2" placeholder="Enter new payload..."></textarea>
+            <textarea id="payload-add-text" rows="12" placeholder="One payload per line &#10;Paste as many as you want..." spellcheck="false"></textarea>
             <div class="payload-add-controls">
+                <span id="payload-add-count" class="status-label"></span>
                 <label><input type="checkbox" id="payload-add-quick"> Quick scan</label>
-                <button id="btn-payload-add-confirm" class="btn-primary" style="width:auto;padding:0 16px">Add Payload</button>
+                <button id="btn-payload-add-confirm" class="btn-primary" style="width:auto;padding:0 16px">Add Payloads</button>
                 <button id="btn-payload-add-cancel" class="btn-small">Cancel</button>
             </div>
         </div>

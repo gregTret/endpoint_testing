@@ -27,7 +27,7 @@ var PayloadEditor = (function () {
 
     // DOM refs (set in init)
     let $list, $modal, $editorList, $stats, $search, $addForm,
-        $title, $badge, $addText, $addQuick;
+        $title, $badge, $addText, $addQuick, $addCount;
 
     // ── Public API ──────────────────────────────────────────────────
 
@@ -42,6 +42,7 @@ var PayloadEditor = (function () {
         $badge      = document.getElementById('payload-customized-badge');
         $addText    = document.getElementById('payload-add-text');
         $addQuick   = document.getElementById('payload-add-quick');
+        $addCount   = document.getElementById('payload-add-count');
 
         if (!$list || !$modal) return;
 
@@ -57,8 +58,10 @@ var PayloadEditor = (function () {
             $addForm.classList.remove('hidden');
             $addText.value = '';
             $addQuick.checked = false;
+            if ($addCount) $addCount.textContent = '';
             $addText.focus();
         });
+        $addText.addEventListener('input', _updateAddCount);
         document.getElementById('btn-payload-add-cancel').addEventListener('click', () => {
             $addForm.classList.add('hidden');
         });
@@ -269,6 +272,12 @@ var PayloadEditor = (function () {
 
         // Re-open editor with fresh defaults
         await openEditor(_currentType);
+    }
+
+    function _updateAddCount() {
+        if (!$addCount) return;
+        const lines = ($addText.value || '').split('\n').map(l => l.trim()).filter(Boolean);
+        $addCount.textContent = lines.length ? `${lines.length} payload${lines.length === 1 ? '' : 's'}` : '';
     }
 
     function _escAttr(s) {

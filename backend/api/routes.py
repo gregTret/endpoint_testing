@@ -8,7 +8,7 @@ from fastapi import APIRouter, BackgroundTasks
 from fastapi.responses import JSONResponse
 
 from config import REPLAY_TIMEOUT, CRAWL_DEFAULT_DEPTH, CRAWL_DEFAULT_MAX_PAGES, PROXY_HOST, PROXY_PORT
-from config import OOB_DEFAULT_URL
+from config import OOB_DEFAULT_URL, DEFAULT_HEADERS
 from storage.db import (
     get_request_logs,
     get_request_log_by_id,
@@ -633,10 +633,12 @@ async def replay_request(log_id: int):
 
     try:
         proxy_url = f"http://{PROXY_HOST}:{PROXY_PORT}"
-        replay_headers = {
+        defaults = await get_default_headers()
+        replay_headers = dict(defaults)
+        replay_headers.update({
             k: v for k, v in entry["request_headers"].items()
             if k.lower() not in ("host", "content-length", "transfer-encoding")
-        }
+        })
         replay_headers["x-ept-scan"] = "1"
         async with httpx.AsyncClient(verify=False, timeout=REPLAY_TIMEOUT, proxy=proxy_url) as client:
             resp = await client.request(
@@ -667,11 +669,13 @@ async def send_single_request(data: dict):
     if not url:
         return JSONResponse(status_code=400, content={"error": "URL is required"})
 
-    clean_headers = {
+    defaults = await get_default_headers()
+    clean_headers = dict(defaults)
+    clean_headers.update({
         k: v for k, v in headers.items()
         if k.lower() not in ("host", "content-length", "transfer-encoding",
                               "connection", "accept-encoding")
-    }
+    })
     clean_headers["x-ept-scan"] = "1"
 
     try:
@@ -852,6 +856,43 @@ async def test_oob_connection(data: dict = None):
             return JSONResponse(status_code=502, content={"ok": False, "error": f"Server returned {resp.status_code}"})
     except Exception as e:
         return JSONResponse(status_code=502, content={"ok": False, "error": str(e)})
+
+
+# ──────────────────────────── Default Headers Settings ──────────────────
+
+
+async def get_default_headers() -> dict:
+    """Return merged default headers: config defaults + workspace overrides.
+
+    Used by injectors and repeater to set realistic headers on outgoing
+    requests so they don't leak tool fingerprints (e.g. python-httpx UA).
+    """
+    raw = await get_workspace_setting(_active_workspace, "default_headers")
+    if raw:
+        try:
+            return {**DEFAULT_HEADERS, **json.loads(raw)}
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return dict(DEFAULT_HEADERS)
+
+
+@router.get("/settings/headers")
+async def get_header_settings():
+    headers = await get_default_headers()
+    return {"headers": headers}
+
+
+@router.post("/settings/headers")
+async def update_header_settings(data: dict):
+    headers = data.get("headers")
+    if headers is None:
+        # Reset to defaults
+        await set_workspace_setting(_active_workspace, "default_headers", "")
+        return {"headers": dict(DEFAULT_HEADERS)}
+    if not isinstance(headers, dict):
+        return JSONResponse(status_code=400, content={"error": "headers must be a JSON object"})
+    await set_workspace_setting(_active_workspace, "default_headers", json.dumps(headers))
+    return {"headers": headers}
 
 
 # ──────────────────────────── OOB Tab Endpoints ──────────────────────────

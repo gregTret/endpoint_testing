@@ -175,11 +175,11 @@ window.InjectorUI = (() => {
 <span class="scan-payload">${esc(data.request_method || payload.method)} ${esc(payload.url)}</span>
 </div>
 <div class="scan-detail-row"><strong>Request Headers Sent:</strong></div>
-${EPTUtils.bodyPreBlock(JSON.stringify(data.request_headers || {}, null, 2))}
+${EPTUtils.headersBlock(data.request_headers || {})}
 <div class="scan-detail-row"><strong>Request Body Sent:</strong></div>
 ${EPTUtils.bodyPreBlock(data.request_body || '')}
 <div class="scan-detail-row"><strong>Response Headers:</strong></div>
-${EPTUtils.bodyPreBlock(JSON.stringify(data.headers || {}, null, 2))}
+${EPTUtils.headersBlock(data.headers || {})}
 <div class="scan-detail-row"><strong>Response Body:</strong></div>
 ${EPTUtils.bodyPreBlock(data.body || '')}
 </div>`;
@@ -416,7 +416,7 @@ oobBadge + oobTypeBadge +
 `<div class="scan-detail-row"><strong>Payload:</strong> ${esc(r.payload)}</div>` +
 `<div class="scan-detail-row"><strong>Status:</strong> ${r.response_code} &nbsp; <strong>Time:</strong> ${r.response_time_ms}ms</div>` +
 `<div class="scan-detail-row"><strong>Request Headers:</strong></div>` +
-EPTUtils.bodyPreBlock(r.request_headers || '') +
+EPTUtils.headersBlock(r.request_headers || '') +
 `<div class="scan-detail-row"><strong>Request Body:</strong></div>` +
 EPTUtils.bodyPreBlock(r.request_body || '') +
 `<div class="scan-detail-row"><strong>Response Body:</strong></div>` +
