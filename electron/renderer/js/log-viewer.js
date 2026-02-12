@@ -96,22 +96,22 @@ window.LogViewer = (() => {
         }
         detailTitle.textContent = `${entry.method} ${entry.url}`;
 
-        detailContent.innerHTML = `
-<div class="detail-section">
-    <div class="detail-section-title">Request Headers</div>
-    ${formatHeaders(entry.request_headers)}
+        detailContent.innerHTML =
+`<div class="detail-section">
+<div class="detail-section-title">Request Headers</div>
+${formatHeaders(entry.request_headers)}
 </div>
 <div class="detail-section">
-    <div class="detail-section-title">Request Body</div>
-    ${esc(entry.request_body || '(empty)')}
+<div class="detail-section-title">Request Body</div>
+${EPTUtils.bodyPreBlock(entry.request_body || '')}
 </div>
 <div class="detail-section">
-    <div class="detail-section-title">Response Headers</div>
-    ${formatHeaders(entry.response_headers)}
+<div class="detail-section-title">Response Headers</div>
+${formatHeaders(entry.response_headers)}
 </div>
 <div class="detail-section">
-    <div class="detail-section-title">Response Body</div>
-    ${esc((entry.response_body || '').substring(0, 5000))}
+<div class="detail-section-title">Response Body</div>
+${EPTUtils.bodyPreBlock((entry.response_body || '').substring(0, 5000))}
 </div>`;
     }
 
@@ -164,6 +164,8 @@ window.LogViewer = (() => {
             url: entry.url,
             headers: entry.request_headers || {},
             body: entry.request_body || '',
+            request_headers: entry.request_headers || {},
+            request_body: entry.request_body || '',
         };
     }
 

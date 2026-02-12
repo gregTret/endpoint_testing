@@ -569,6 +569,45 @@ html, body {
     font-size: 10px;
 }
 
+/* ── Body pre-block wrapper (copy button + formatting) ───────────── */
+.body-pre-wrapper {
+    position: relative;
+}
+.btn-copy-body {
+    position: absolute;
+    top: 8px;
+    right: 4px;
+    padding: 2px 8px;
+    font-size: 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text-dim);
+    cursor: pointer;
+    z-index: 1;
+    opacity: 0;
+    transition: opacity .15s;
+}
+.body-pre-wrapper:hover .btn-copy-body {
+    opacity: 1;
+}
+.btn-copy-body:hover {
+    color: var(--text);
+    background: var(--border);
+}
+.canary-highlight {
+    background: #e6a817;
+    color: #1a1a1a;
+    padding: 0 2px;
+    border-radius: 2px;
+    font-weight: 700;
+}
+.key-picker-actions {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 4px;
+}
+
 /* ── Key Picker ───────────────────────────────────────────────────── */
 .key-picker-table {
     max-height: 160px;
@@ -1396,6 +1435,63 @@ html, body {
     font-size: 12px; cursor: context-menu;
 }
 .intercept-history-entry:hover { background: var(--surface2); }
+
+/* ── Multipart File Upload Editor ──────────────────────────────── */
+.multipart-part-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 6px;
+    overflow: hidden;
+}
+.multipart-part-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    cursor: pointer;
+    user-select: none;
+}
+.multipart-part-header.collapsed + .multipart-part-body { display: none; }
+.multipart-part-name {
+    font-weight: 600;
+    color: var(--text);
+    font-family: var(--mono);
+}
+.multipart-part-filename {
+    color: var(--accent);
+    font-family: var(--mono);
+}
+.multipart-part-size {
+    margin-left: auto;
+    color: var(--text-dim);
+    font-size: 10px;
+}
+.multipart-remove-btn {
+    width: 20px !important;
+    height: 20px !important;
+    padding: 0 !important;
+    font-size: 10px !important;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+.multipart-part-body { padding: 8px; }
+.multipart-part-body textarea {
+    font-family: var(--mono);
+    font-size: 11px;
+}
+.multipart-preset-row {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+    align-items: center;
+}
+.multipart-preset-row select { flex: 1; height: 28px; }
 
 /* ── OOB Badge ────────────────────────────────────────────────────── */
 .oob-badge {

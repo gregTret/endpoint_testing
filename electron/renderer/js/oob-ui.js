@@ -51,6 +51,14 @@ window.OobUI = (() => {
         document.querySelectorAll('#oob-injection-points input[type="checkbox"]')
             .forEach(cb => cb.addEventListener('change', refreshKeyPicker));
 
+        // Select All / Deselect All for OOB key picker
+        document.getElementById('btn-oob-key-select-all').addEventListener('click', () => {
+            keyPickerEl.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = true);
+        });
+        document.getElementById('btn-oob-key-deselect-all').addEventListener('click', () => {
+            keyPickerEl.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
+        });
+
         // Recheck banner
         recheckBannerEl = document.createElement('div');
         recheckBannerEl.className = 'oob-recheck-banner hidden';
