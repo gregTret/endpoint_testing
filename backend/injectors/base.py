@@ -8,7 +8,7 @@ from urllib.parse import urlparse, parse_qs, urlunparse, quote
 
 import httpx
 
-from config import SCAN_DEFAULT_TIMEOUT, SCAN_RESPONSE_CAP, PROXY_HOST, PROXY_PORT
+from config import SCAN_DEFAULT_TIMEOUT, SCAN_RESPONSE_CAP, PROXY_HOST, PROXY_PORT, DEFAULT_HEADERS
 from models.scan_config import ScanResult, VulnerabilityReport
 
 log = logging.getLogger(__name__)
@@ -126,6 +126,17 @@ class BaseInjector(ABC):
         injection_points = injection_points or ["params"]
         results: list[ScanResult] = []
         ctrl = control or {"signal": "run"}
+
+        # Merge workspace default headers (User-Agent etc.) under request headers.
+        # Request-specific headers take priority over defaults.
+        try:
+            from api.routes import get_default_headers
+            defaults = await get_default_headers()
+        except Exception:
+            defaults = dict(DEFAULT_HEADERS)
+        merged_headers = dict(defaults)
+        merged_headers.update(headers)
+        headers = merged_headers
 
         # Merge any query params embedded in the URL into the params dict
         # so injections actually replace values instead of appending duplicates

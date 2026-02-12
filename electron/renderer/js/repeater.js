@@ -188,7 +188,7 @@ window.Repeater = (() => {
 <span class="scan-payload">${esc(method)} ${esc(url)}</span>
 </div>
 <div class="scan-detail-row"><strong>Response Headers:</strong></div>
-${EPTUtils.bodyPreBlock(JSON.stringify(data.headers || {}, null, 2))}
+${EPTUtils.headersBlock(data.headers || {})}
 <div class="scan-detail-row"><strong>Response Body:</strong></div>
 ${EPTUtils.bodyPreBlock(data.body || data.error || '')}
 </div>`;

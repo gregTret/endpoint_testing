@@ -24,6 +24,7 @@
         { id: 'repeater',  label: 'Repeater',   icon: '<svg viewBox="0 0 24 24"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>' },
         { id: 'ai',        label: 'AI',         icon: '<svg viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/><line x1="14.5" y1="4" x2="9.5" y2="20"/></svg>' },
         { id: 'analytics', label: 'Analytics',  icon: '<svg viewBox="0 0 24 24"><rect x="4" y="14" width="4" height="7" rx="1"/><rect x="10" y="8" width="4" height="13" rx="1"/><rect x="16" y="3" width="4" height="18" rx="1"/></svg>' },
+        { id: 'info',      label: 'Info',       icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>' },
         { id: 'settings',  label: 'Settings',   icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>' },
     ];
 
@@ -130,11 +131,17 @@
         // OOB callback server settings
         initOobSettings();
 
+        // Default request headers
+        initDefaultHeaders();
+
         // Export modal
         initExportModal();
 
         // Panel resize drag handle
         initPanelResize();
+
+        // Detail panel vertical resize
+        initDetailResize();
     }
 
     /** Clear current UI data and reload from the active workspace */
@@ -150,6 +157,7 @@
         if (AiAnalysis.loadHistory) AiAnalysis.loadHistory();
         if (PayloadEditor.refresh) PayloadEditor.refresh();
         if (window._reloadOobSettings) window._reloadOobSettings();
+        if (window._reloadDefaultHeaders) window._reloadDefaultHeaders();
     }
 
     // ── Tab Config ──────────────────────────────────────────────────
@@ -193,14 +201,19 @@
         const bar = document.getElementById('tab-bar');
         bar.innerHTML = '';
         const visibleTabs = tabConfig.filter(t => t.visible);
-        // Settings is always shown, ensure it's in the list
+        // Settings + Info are always shown, ensure they're in the list
         if (!visibleTabs.some(t => t.id === 'settings')) {
             visibleTabs.push({ id: 'settings', visible: true });
         }
+        if (!visibleTabs.some(t => t.id === 'info')) {
+            visibleTabs.push({ id: 'info', visible: true });
+        }
 
-        // Separate settings from the rest
-        const mainTabs = visibleTabs.filter(t => t.id !== 'settings');
+        // Separate pinned-bottom tabs from the rest
+        const bottomIds = new Set(['settings', 'info']);
+        const mainTabs = visibleTabs.filter(t => !bottomIds.has(t.id));
         const settingsTab = visibleTabs.find(t => t.id === 'settings');
+        const infoTab = visibleTabs.find(t => t.id === 'info');
 
         // Render main tabs
         mainTabs.forEach((t, i) => {
@@ -215,10 +228,24 @@
             bar.appendChild(btn);
         });
 
-        // Spacer pushes settings to bottom
+        // Spacer pushes bottom tabs down
         const spacer = document.createElement('div');
         spacer.className = 'tab-spacer';
         bar.appendChild(spacer);
+
+        // Info tab pinned above settings
+        if (infoTab) {
+            const def = ALL_TABS.find(a => a.id === 'info');
+            if (def) {
+                const btn = document.createElement('button');
+                btn.className = 'tab';
+                btn.dataset.tab = 'info';
+                btn.dataset.tooltip = def.label;
+                btn.innerHTML = def.icon;
+                btn.addEventListener('click', () => switchTab('info'));
+                bar.appendChild(btn);
+            }
+        }
 
         // Settings tab pinned to bottom
         if (settingsTab) {
@@ -385,6 +412,7 @@
         // Load data when switching to tabs that need it
         if (tabName === 'analytics' && Analytics.refresh) Analytics.refresh();
         if (tabName === 'ai' && AiAnalysis.refresh) AiAnalysis.refresh();
+        if (tabName === 'info') refreshInfoTab();
     }
 
     // ── Panel resize ────────────────────────────────────────────────
@@ -420,6 +448,79 @@
             document.body.style.cursor = '';
             document.body.style.userSelect = '';
         });
+    }
+
+    // ── Detail Panel Resize ─────────────────────────────────────────
+
+    function initDetailResize() {
+        const handle = document.getElementById('detail-resize-handle');
+        const panel  = document.getElementById('detail-panel');
+        if (!handle || !panel) return;
+
+        let dragging = false;
+
+        handle.addEventListener('mousedown', (e) => {
+            if (panel.classList.contains('collapsed')) return;
+            e.preventDefault();
+            dragging = true;
+            handle.classList.add('dragging');
+            document.body.style.cursor = 'ns-resize';
+            document.body.style.userSelect = 'none';
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!dragging) return;
+            const panelParent = panel.parentElement;
+            const parentRect = panelParent.getBoundingClientRect();
+            // Height = distance from mouse to bottom of parent
+            const newHeight = Math.max(100, Math.min(parentRect.bottom - e.clientY, parentRect.height - 80));
+            panel.style.setProperty('--detail-height', newHeight + 'px');
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (!dragging) return;
+            dragging = false;
+            handle.classList.remove('dragging');
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+        });
+    }
+
+    // ── Info Tab ─────────────────────────────────────────────────────
+
+    function refreshInfoTab() {
+        // Fetch the current OOB server URL and resolve info-url elements
+        fetch(`${API}/settings/oob`)
+            .then(r => r.json())
+            .then(data => {
+                const base = (data.oob_server_url || '').replace(/\/+$/, '');
+                document.querySelectorAll('.info-url[data-oob-path]').forEach(el => {
+                    const path = el.dataset.oobPath;
+                    const full = base + path;
+                    el.title = full;
+                    el.textContent = full;
+                    // Left-click: open in embedded browser
+                    el.onclick = (e) => {
+                        e.preventDefault();
+                        const urlInput = document.getElementById('url-input');
+                        if (urlInput) urlInput.value = full;
+                        if (window.electronAPI && window.electronAPI.navigate) {
+                            window.electronAPI.navigate(full);
+                        }
+                    };
+                    // Right-click: copy to clipboard
+                    el.oncontextmenu = (e) => {
+                        e.preventDefault();
+                        navigator.clipboard.writeText(full).then(() => {
+                            const orig = el.textContent;
+                            el.textContent = 'Copied!';
+                            el.style.color = 'var(--success)';
+                            setTimeout(() => { el.textContent = orig; el.style.color = ''; }, 1200);
+                        });
+                    };
+                });
+            })
+            .catch(() => {});
     }
 
     // ── Proxy Settings ──────────────────────────────────────────────
@@ -526,6 +627,93 @@
             })
             .catch(() => { statusLbl.textContent = 'Connection failed'; statusLbl.style.color = 'var(--danger)'; });
         });
+    }
+
+    // ── Default Request Headers ─────────────────────────────────────
+
+    function initDefaultHeaders() {
+        const container = document.getElementById('default-headers-rows');
+        const addBtn    = document.getElementById('btn-add-default-header');
+        const saveBtn   = document.getElementById('btn-save-default-headers');
+        const resetBtn  = document.getElementById('btn-reset-default-headers');
+        const statusLbl = document.getElementById('default-headers-status');
+        if (!container) return;
+
+        function renderRows(headers) {
+            container.innerHTML = '';
+            Object.entries(headers).forEach(([k, v]) => {
+                const row = document.createElement('div');
+                row.className = 'default-header-row';
+                row.innerHTML = `<input type="text" class="header-key" value="${_escAttr(k)}" placeholder="Header-Name" spellcheck="false">` +
+                    `<input type="text" class="header-val" value="${_escAttr(v)}" placeholder="value" spellcheck="false">` +
+                    `<button class="btn-remove-header" title="Remove">\u00d7</button>`;
+                row.querySelector('.btn-remove-header').addEventListener('click', () => row.remove());
+                container.appendChild(row);
+            });
+        }
+
+        function collectHeaders() {
+            const hdrs = {};
+            container.querySelectorAll('.default-header-row').forEach(row => {
+                const k = row.querySelector('.header-key').value.trim();
+                const v = row.querySelector('.header-val').value;
+                if (k) hdrs[k] = v;
+            });
+            return hdrs;
+        }
+
+        function loadHeaders() {
+            fetch(`${API}/settings/headers`)
+                .then(r => r.json())
+                .then(data => renderRows(data.headers || {}))
+                .catch(() => {});
+        }
+        loadHeaders();
+
+        window._reloadDefaultHeaders = loadHeaders;
+
+        addBtn.addEventListener('click', () => {
+            const row = document.createElement('div');
+            row.className = 'default-header-row';
+            row.innerHTML = `<input type="text" class="header-key" placeholder="Header-Name" spellcheck="false">` +
+                `<input type="text" class="header-val" placeholder="value" spellcheck="false">` +
+                `<button class="btn-remove-header" title="Remove">\u00d7</button>`;
+            row.querySelector('.btn-remove-header').addEventListener('click', () => row.remove());
+            container.appendChild(row);
+            row.querySelector('.header-key').focus();
+        });
+
+        saveBtn.addEventListener('click', () => {
+            const hdrs = collectHeaders();
+            fetch(`${API}/settings/headers`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ headers: hdrs }),
+            })
+            .then(r => r.json())
+            .then(() => { statusLbl.textContent = 'Saved'; statusLbl.style.color = 'var(--success)'; })
+            .catch(() => { statusLbl.textContent = 'Save failed'; statusLbl.style.color = 'var(--danger)'; });
+        });
+
+        resetBtn.addEventListener('click', () => {
+            if (!confirm('Reset to default headers?')) return;
+            fetch(`${API}/settings/headers`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ headers: null }),
+            })
+            .then(r => r.json())
+            .then(data => {
+                renderRows(data.headers || {});
+                statusLbl.textContent = 'Reset to defaults';
+                statusLbl.style.color = 'var(--success)';
+            })
+            .catch(() => { statusLbl.textContent = 'Reset failed'; statusLbl.style.color = 'var(--danger)'; });
+        });
+    }
+
+    function _escAttr(s) {
+        return (s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 
     // ── Export Modal ────────────────────────────────────────────────
