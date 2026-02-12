@@ -153,7 +153,10 @@ ${EPTUtils.bodyPreBlock((entry.response_body || '').substring(0, 5000))}
     function formatHeaders(hdrs) {
         if (!hdrs || typeof hdrs !== 'object') return '(none)';
         return Object.entries(hdrs)
-            .map(([k, v]) => `<span class="hdr-key" data-copy-hdr="${esc(v)}" title="Click to copy value">${esc(k)}</span>: <span class="hdr-val" data-copy-hdr="${esc(v)}" title="Click to copy value">${esc(v)}</span>`)
+            .map(([k, v]) => {
+                const av = EPTUtils.escAttr(v);
+                return `<span class="hdr-key" data-copy-hdr="${av}" title="Click to copy value">${esc(k)}</span>: <span class="hdr-val" data-copy-hdr="${av}" title="Click to copy value">${esc(v)}</span>`;
+            })
             .join('\n');
     }
 

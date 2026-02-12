@@ -84,6 +84,11 @@ window.EPTUtils = (() => {
         return d.innerHTML;
     }
 
+    /** Escape a string for safe use inside an HTML attribute (double-quoted). */
+    function escAttr(s) {
+        return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
     /**
      * Wrap known canary strings in <mark> tags.
      * Called AFTER esc() so canaries are plain text, safe to wrap.
@@ -239,8 +244,9 @@ window.EPTUtils = (() => {
         if (!obj || typeof obj !== 'object') return '<span style="color:var(--text-dim)">(none)</span>';
 
         const lines = Object.entries(obj).map(([k, v]) => {
-            const ev = esc(String(v));
-            return `<span class="hdr-key" data-copy-hdr="${ev}" title="Click to copy value">${esc(k)}</span>: <span class="hdr-val" data-copy-hdr="${ev}" title="Click to copy value">${ev}</span>`;
+            const sv = String(v);
+            const attrVal = escAttr(sv);
+            return `<span class="hdr-key" data-copy-hdr="${attrVal}" title="Click to copy value">${esc(k)}</span>: <span class="hdr-val" data-copy-hdr="${attrVal}" title="Click to copy value">${esc(sv)}</span>`;
         }).join('\n');
 
         const id = 'hdr-' + Math.random().toString(36).slice(2, 10);
@@ -248,5 +254,5 @@ window.EPTUtils = (() => {
         return `<div class="body-pre-wrapper"><button class="btn-copy-body" data-copy-target="${id}" title="Copy all headers">${copyIcon}</button><pre class="scan-response-body" id="${id}">${lines}</pre></div>`;
     }
 
-    return { formatBody, esc, bodyPreBlock, headersBlock, highlightCanaries, parseRawHttp, KNOWN_CANARIES };
+    return { formatBody, esc, escAttr, bodyPreBlock, headersBlock, highlightCanaries, parseRawHttp, KNOWN_CANARIES };
 })();

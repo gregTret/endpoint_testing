@@ -60,6 +60,7 @@ class ProxyManager:
             listen_host=self.listen_host,
             listen_port=self.listen_port,
             ssl_insecure=True,
+            http2=False,
         )
         self.master = DumpMaster(opts, with_dumper=False)
         addon = InterceptAddon(

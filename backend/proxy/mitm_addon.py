@@ -186,6 +186,10 @@ class InterceptAddon:
         if flow.metadata.get("is_scan"):
             return
         error_msg = flow.error.msg if flow.error else "Unknown"
+        try:
+            request_body = flow.request.get_text(strict=False) or ""
+        except Exception:
+            request_body = ""
         entry = {
             "id": flow.metadata.get("log_id", 0),
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -194,7 +198,7 @@ class InterceptAddon:
             "host": flow.request.host,
             "path": flow.request.path,
             "request_headers": dict(flow.request.headers),
-            "request_body": "",
+            "request_body": request_body[:LOG_BODY_CAP],
             "status_code": 0,
             "response_headers": {},
             "response_body": f"Error: {error_msg}",
