@@ -174,6 +174,24 @@ async def init_db():
             )
         """)
 
+        # ── AI Analysis Results ──
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS ai_analysis_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workspace_id TEXT NOT NULL,
+                model TEXT NOT NULL,
+                host_filter TEXT DEFAULT '',
+                endpoint_count INTEGER DEFAULT 0,
+                findings TEXT NOT NULL DEFAULT '[]',
+                summary TEXT NOT NULL DEFAULT '',
+                raw_response TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ai_analysis_workspace ON ai_analysis_results(workspace_id)"
+        )
+
         await db.commit()
 
 
@@ -229,6 +247,7 @@ async def delete_workspace(workspace_id: str) -> None:
         await db.execute("DELETE FROM repeater_history WHERE workspace_id = ?", (workspace_id,))
         await db.execute("DELETE FROM payload_config WHERE workspace_id = ?", (workspace_id,))
         await db.execute("DELETE FROM workspace_settings WHERE workspace_id = ?", (workspace_id,))
+        await db.execute("DELETE FROM ai_analysis_results WHERE workspace_id = ?", (workspace_id,))
         await db.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
         await db.commit()
 
@@ -695,7 +714,68 @@ async def delete_workspace_setting(workspace_id: str, key: str) -> None:
         await db.commit()
 
 
+# ── AI Analysis ───────────────────────────────────────────────────
+
+
+async def save_ai_analysis(workspace_id: str, model: str, host_filter: str,
+                           endpoint_count: int, findings: list, summary: str,
+                           raw_response: str) -> int:
+    """Persist an AI analysis run. Returns the new row ID."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "INSERT INTO ai_analysis_results "
+            "(workspace_id, model, host_filter, endpoint_count, findings, summary, raw_response, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (workspace_id, model, host_filter, endpoint_count,
+             json.dumps(findings), summary, raw_response, now),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_ai_analysis_results(workspace_id: str, limit: int = 20) -> list[dict]:
+    """Fetch AI analysis results for a workspace, newest first."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM ai_analysis_results WHERE workspace_id = ? ORDER BY id DESC LIMIT ?",
+            (workspace_id, limit),
+        )
+        rows = await cursor.fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            d["findings"] = _safe_json_list(d.get("findings", "[]"))
+            results.append(d)
+        return results
+
+
+async def delete_ai_analysis_results(workspace_id: str):
+    """Delete all AI analysis results for a workspace."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM ai_analysis_results WHERE workspace_id = ?", (workspace_id,))
+        await db.commit()
+
+
+async def delete_ai_analysis_by_id(result_id: int):
+    """Delete a single AI analysis result by its ID."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM ai_analysis_results WHERE id = ?", (result_id,))
+        await db.commit()
+
+
 # ── Helpers ────────────────────────────────────────────────────────
+
+
+def _safe_json_list(raw: str) -> list:
+    """Parse JSON string as list, returning empty list on failure."""
+    try:
+        result = json.loads(raw)
+        return result if isinstance(result, list) else []
+    except (json.JSONDecodeError, TypeError):
+        return []
 
 
 def _safe_json(raw: str) -> dict:

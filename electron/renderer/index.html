@@ -332,6 +332,37 @@
             </div>
         </div>
 
+        <!-- AI Analysis -->
+        <div class="tab-pane" data-tab="ai">
+            <div id="ai-config" class="ai-config-panel">
+                <div class="form-row" style="gap:8px;align-items:flex-end">
+                    <div class="form-group half" style="margin:0">
+                        <label>Model</label>
+                        <select id="ai-model">
+                            <option value="opus" selected>Opus (most capable)</option>
+                            <option value="sonnet">Sonnet (balanced)</option>
+                            <option value="haiku">Haiku (fastest)</option>
+                        </select>
+                    </div>
+                    <div class="form-group half" style="margin:0">
+                        <label>Host Filter</label>
+                        <select id="ai-host-filter">
+                            <option value="">All traffic</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row" style="gap:6px;margin-top:8px;align-items:center">
+                    <button id="btn-ai-preview" class="btn-small" style="height:32px;padding:0 14px">Preview</button>
+                    <button id="btn-ai-analyze" class="btn-primary" style="width:auto;padding:0 20px;height:32px">Analyze</button>
+                    <span id="ai-preview-info" class="status-label" style="flex:1"></span>
+                </div>
+                <div id="ai-progress" class="hidden" style="margin-top:8px"></div>
+            </div>
+            <div id="ai-results" class="scrollable" style="flex:1;padding:10px">
+                <p class="placeholder-text" style="padding:20px;text-align:center">No analysis results yet. Click Preview, then Analyze to scan your captured traffic.</p>
+            </div>
+        </div>
+
         <!-- Credentials -->
         <!-- Analytics -->
         <div class="tab-pane" data-tab="analytics">
@@ -438,6 +469,11 @@
                                 <td class="data-mgmt-label">OOB Registry</td>
                                 <td class="data-mgmt-desc">In-memory scan keys for callback checking</td>
                                 <td class="data-mgmt-action"><button id="btn-clear-oob-registry" class="btn-small danger">Clear</button></td>
+                            </tr>
+                            <tr>
+                                <td class="data-mgmt-label">AI Analysis</td>
+                                <td class="data-mgmt-desc">Saved Claude analysis results</td>
+                                <td class="data-mgmt-action"><button id="btn-clear-ai-history" class="btn-small danger">Clear</button></td>
                             </tr>
                         </tbody>
                     </table>
@@ -621,6 +657,7 @@
 <script src="js/oob-ui.js"></script>
 <script src="js/repeater.js"></script>
 <script src="js/credentials.js"></script>
+<script src="js/ai-analysis.js"></script>
 <script src="js/analytics.js"></script>
 <script src="js/payload-editor.js"></script>
 <script src="js/app.js"></script>

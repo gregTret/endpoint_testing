@@ -16,14 +16,15 @@
 
     // ── Tab definitions (default order) ─────────────────────────────
     const ALL_TABS = [
-        { id: 'logs',      label: 'Logs' },
-        { id: 'sitemap',   label: 'Site Map' },
-        { id: 'intercept', label: 'Intercept' },
-        { id: 'injector',  label: 'Injector' },
-        { id: 'oob',       label: 'OOB' },
-        { id: 'repeater',  label: 'Repeater' },
-        { id: 'analytics', label: 'Analytics' },
-        { id: 'settings',  label: 'Settings' },
+        { id: 'logs',      label: 'Logs',      icon: '<svg viewBox="0 0 24 24"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="14" y2="18"/></svg>' },
+        { id: 'sitemap',   label: 'Site Map',   icon: '<svg viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="4" rx="1"/><rect x="2" y="18" width="6" height="4" rx="1"/><rect x="16" y="18" width="6" height="4" rx="1"/><line x1="12" y1="6" x2="12" y2="12"/><line x1="5" y1="12" x2="19" y2="12"/><line x1="5" y1="12" x2="5" y2="18"/><line x1="19" y1="12" x2="19" y2="18"/></svg>' },
+        { id: 'intercept', label: 'Intercept',  icon: '<svg viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>' },
+        { id: 'injector',  label: 'Injector',   icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>' },
+        { id: 'oob',       label: 'OOB',        icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49"/><path d="M7.76 16.24a6 6 0 0 1 0-8.49"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>' },
+        { id: 'repeater',  label: 'Repeater',   icon: '<svg viewBox="0 0 24 24"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>' },
+        { id: 'ai',        label: 'AI',         icon: '<svg viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/><line x1="14.5" y1="4" x2="9.5" y2="20"/></svg>' },
+        { id: 'analytics', label: 'Analytics',  icon: '<svg viewBox="0 0 24 24"><rect x="4" y="14" width="4" height="7" rx="1"/><rect x="10" y="8" width="4" height="13" rx="1"/><rect x="16" y="3" width="4" height="18" rx="1"/></svg>' },
+        { id: 'settings',  label: 'Settings',   icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>' },
     ];
 
     let tabConfig = []; // [{ id, visible }] — current workspace config
@@ -70,6 +71,7 @@
         InjectorUI.init();
         OobUI.init();
         Repeater.init();
+        AiAnalysis.init();
         Analytics.init();
         PayloadEditor.init();
 
@@ -117,6 +119,10 @@
             if (!confirm('Clear OOB scan registry? This removes in-memory scan keys used for callback checking.')) return;
             if (OobUI.clearRegistry) OobUI.clearRegistry();
         });
+        document.getElementById('btn-clear-ai-history').addEventListener('click', () => {
+            if (!confirm('Clear all AI analysis results?')) return;
+            if (AiAnalysis.clearHistory) AiAnalysis.clearHistory();
+        });
 
         // Proxy settings toggle
         initProxySettings();
@@ -141,6 +147,7 @@
         if (InjectorUI.loadHistory) InjectorUI.loadHistory();
         if (OobUI.loadHistory) OobUI.loadHistory();
         if (Repeater.loadHistory) Repeater.loadHistory();
+        if (AiAnalysis.loadHistory) AiAnalysis.loadHistory();
         if (PayloadEditor.refresh) PayloadEditor.refresh();
         if (window._reloadOobSettings) window._reloadOobSettings();
     }
@@ -191,19 +198,44 @@
             visibleTabs.push({ id: 'settings', visible: true });
         }
 
-        visibleTabs.forEach((t, i) => {
+        // Separate settings from the rest
+        const mainTabs = visibleTabs.filter(t => t.id !== 'settings');
+        const settingsTab = visibleTabs.find(t => t.id === 'settings');
+
+        // Render main tabs
+        mainTabs.forEach((t, i) => {
             const def = ALL_TABS.find(a => a.id === t.id);
             if (!def) return;
             const btn = document.createElement('button');
             btn.className = 'tab' + (i === 0 ? ' active' : '');
             btn.dataset.tab = t.id;
-            btn.textContent = def.label;
+            btn.dataset.tooltip = def.label;
+            btn.innerHTML = def.icon;
             btn.addEventListener('click', () => switchTab(t.id));
             bar.appendChild(btn);
         });
 
+        // Spacer pushes settings to bottom
+        const spacer = document.createElement('div');
+        spacer.className = 'tab-spacer';
+        bar.appendChild(spacer);
+
+        // Settings tab pinned to bottom
+        if (settingsTab) {
+            const def = ALL_TABS.find(a => a.id === 'settings');
+            if (def) {
+                const btn = document.createElement('button');
+                btn.className = 'tab';
+                btn.dataset.tab = 'settings';
+                btn.dataset.tooltip = def.label;
+                btn.innerHTML = def.icon;
+                btn.addEventListener('click', () => switchTab('settings'));
+                bar.appendChild(btn);
+            }
+        }
+
         // Show first visible tab's pane
-        const firstTab = visibleTabs[0]?.id || 'logs';
+        const firstTab = mainTabs[0]?.id || 'settings';
         document.querySelectorAll('.tab-pane').forEach(p => {
             p.classList.toggle('active', p.dataset.tab === firstTab);
         });
@@ -219,6 +251,7 @@
             const isSettings = t.id === 'settings';
             return `<div class="tab-config-item" draggable="true" data-idx="${i}">
                 <span class="drag-handle">⠿</span>
+                <span class="tab-config-icon">${def.icon}</span>
                 <label>
                     <input type="checkbox" ${t.visible ? 'checked' : ''} ${isSettings ? 'disabled checked' : ''} data-idx="${i}">
                     ${def.label}
@@ -349,8 +382,9 @@
         document.querySelectorAll('.tab-pane').forEach(p => {
             p.classList.toggle('active', p.dataset.tab === tabName);
         });
-        // Load analytics data when switching to that tab
+        // Load data when switching to tabs that need it
         if (tabName === 'analytics' && Analytics.refresh) Analytics.refresh();
+        if (tabName === 'ai' && AiAnalysis.refresh) AiAnalysis.refresh();
     }
 
     // ── Panel resize ────────────────────────────────────────────────

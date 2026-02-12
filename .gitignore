@@ -16,6 +16,8 @@ build/
 .venv/
 venv/
 *.db
+backend/storage/ai_traffic.json
+backend/storage/ai_debug.log
 
 # ── Node / Electron ──
 electron/node_modules/
