@@ -12,6 +12,7 @@ window.Intercept = (() => {
     let enabled = false;
     let currentFlow = null;
     let queue = [];
+    let _lastPresetPayload = null; // raw content from last applied preset
 
     // DOM refs
     let toggleBtn, queueBadge, statusEl;
@@ -20,6 +21,8 @@ window.Intercept = (() => {
     let respSection, respStatusEl, respHeadersEl, respBodyEl;
     let forwardBtn, dropBtn;
     let multipartSection, multipartPartsEl, presetSelect;
+    let jsonUploadSection, jsonUploadFilesEl, jsonUploadPresetSelect, jsonUploadRawEl;
+    let historyCountEl, interceptPane;
 
     function init() {
         toggleBtn    = document.getElementById('btn-intercept-toggle');
@@ -45,36 +48,105 @@ window.Intercept = (() => {
         multipartPartsEl = document.getElementById('intercept-multipart-parts');
         presetSelect     = document.getElementById('multipart-preset-select');
 
+        jsonUploadSection      = document.getElementById('intercept-json-upload-section');
+        jsonUploadFilesEl      = document.getElementById('intercept-json-upload-files');
+        jsonUploadPresetSelect = document.getElementById('json-upload-preset-select');
+        jsonUploadRawEl        = document.getElementById('intercept-json-upload-raw');
+
         toggleBtn.addEventListener('click', toggle);
         forwardBtn.addEventListener('click', () => decide('forward'));
         dropBtn.addEventListener('click', () => decide('drop'));
         document.getElementById('btn-multipart-add-part').addEventListener('click', addEmptyPart);
         document.getElementById('btn-multipart-apply-preset').addEventListener('click', applyPreset);
+        document.getElementById('btn-multipart-copy-payload').addEventListener('click', _copyPresetPayload);
+        document.getElementById('btn-json-upload-inject-data').addEventListener('click', _jsonUploadInjectData);
+        document.getElementById('btn-json-upload-apply-preset').addEventListener('click', _applyJsonUploadPreset);
+        document.getElementById('btn-json-upload-copy-payload').addEventListener('click', _copyPresetPayload);
+
+        historyCountEl = document.getElementById('intercept-history-count');
+        interceptPane  = document.querySelector('.tab-pane[data-tab="intercept"]');
+
+        document.getElementById('btn-clear-intercept-history').addEventListener('click', clearHistory);
+        document.getElementById('btn-collapse-intercept-history').addEventListener('click', toggleHistoryCollapse);
 
         _populatePresetDropdown();
+        _initHistoryResize();
         fetchStatus();
+    }
+
+    // ── History resize / collapse / clear ─────────────────────────
+
+    function _initHistoryResize() {
+        const handle = document.getElementById('intercept-history-resize');
+        if (!handle || !interceptPane) return;
+
+        let dragging = false;
+
+        handle.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            dragging = true;
+            handle.classList.add('dragging');
+            document.body.style.cursor = 'ns-resize';
+            document.body.style.userSelect = 'none';
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!dragging) return;
+            const paneRect = interceptPane.getBoundingClientRect();
+            const newHeight = Math.max(60, Math.min(paneRect.bottom - e.clientY, paneRect.height - 120));
+            interceptPane.style.setProperty('--intercept-history-height', newHeight + 'px');
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (!dragging) return;
+            dragging = false;
+            handle.classList.remove('dragging');
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+        });
+    }
+
+    function toggleHistoryCollapse() {
+        if (!interceptPane) return;
+        interceptPane.classList.toggle('history-collapsed');
+        const btn = document.getElementById('btn-collapse-intercept-history');
+        btn.innerHTML = interceptPane.classList.contains('history-collapsed') ? '&#9650;' : '&#9660;';
+    }
+
+    function clearHistory() {
+        historyEl.innerHTML = '';
+        _updateHistoryCount();
+    }
+
+    function _updateHistoryCount() {
+        if (!historyCountEl) return;
+        const n = historyEl.querySelectorAll('.intercept-history-entry').length;
+        historyCountEl.textContent = n;
     }
 
     // ── Preset dropdown ──────────────────────────────────────────
 
     function _populatePresetDropdown() {
-        if (!window.UploadPresets || !presetSelect) return;
+        if (!window.UploadPresets) return;
         const cats = {};
         UploadPresets.forEach(p => {
             if (!cats[p.category]) cats[p.category] = [];
             cats[p.category].push(p);
         });
-        Object.entries(cats).forEach(([cat, presets]) => {
-            const og = document.createElement('optgroup');
-            og.label = cat;
-            presets.forEach(p => {
-                const opt = document.createElement('option');
-                opt.value = p.id;
-                opt.textContent = p.name;
-                opt.title = p.description || '';
-                og.appendChild(opt);
+        [presetSelect, jsonUploadPresetSelect].forEach(sel => {
+            if (!sel) return;
+            Object.entries(cats).forEach(([cat, presets]) => {
+                const og = document.createElement('optgroup');
+                og.label = cat;
+                presets.forEach(p => {
+                    const opt = document.createElement('option');
+                    opt.value = p.id;
+                    opt.textContent = p.name;
+                    opt.title = p.description || '';
+                    og.appendChild(opt);
+                });
+                sel.appendChild(og);
             });
-            presetSelect.appendChild(og);
         });
     }
 
@@ -143,15 +215,25 @@ window.Intercept = (() => {
             if (flow.is_multipart && flow.multipart_parts) {
                 bodyGroup.classList.add('hidden');
                 multipartSection.classList.remove('hidden');
+                jsonUploadSection.classList.add('hidden');
                 _renderMultipartParts(flow.multipart_parts);
+            } else if (flow.is_json_upload && flow.json_upload_files) {
+                bodyGroup.classList.add('hidden');
+                multipartSection.classList.add('hidden');
+                jsonUploadSection.classList.remove('hidden');
+                _renderJsonUploadFiles(flow.json_upload_files);
+                jsonUploadRawEl.value = flow.body || '';
             } else {
                 bodyGroup.classList.remove('hidden');
                 multipartSection.classList.add('hidden');
+                jsonUploadSection.classList.add('hidden');
+
             }
         } else {
             // Response phase — request info is read-only, response is editable
             bodyGroup.classList.remove('hidden');
             multipartSection.classList.add('hidden');
+            jsonUploadSection.classList.add('hidden');
             methodEl.value = flow.method || 'GET';
             methodEl.disabled = true;
             urlEl.value = flow.url || '';
@@ -295,6 +377,13 @@ window.Intercept = (() => {
             }
         }
 
+        // Store raw payload for Copy Payload button
+        if (preset.is_binary && preset.content_b64) {
+            _lastPresetPayload = preset.content_b64;
+        } else {
+            _lastPresetPayload = preset.content || '';
+        }
+
         presetSelect.value = '';
     }
 
@@ -314,6 +403,8 @@ window.Intercept = (() => {
                 if (currentFlow.is_multipart && !multipartSection.classList.contains('hidden')) {
                     modifications.multipart_parts = _collectMultipartParts();
                     modifications.multipart_boundary = currentFlow.multipart_boundary;
+                } else if (currentFlow.is_json_upload && !jsonUploadSection.classList.contains('hidden')) {
+                    modifications.json_upload_body = _collectJsonUploadBody();
                 } else {
                     modifications.body = bodyEl.value;
                 }
@@ -350,6 +441,7 @@ window.Intercept = (() => {
             bodyEl.disabled = false;
             bodyGroup.classList.remove('hidden');
             multipartSection.classList.add('hidden');
+            jsonUploadSection.classList.add('hidden');
             if (enabled) {
                 emptyEl.innerHTML = '<p class="placeholder-text">Waiting for requests...</p>';
             }
@@ -364,7 +456,9 @@ window.Intercept = (() => {
         const badge = decision === 'drop'
             ? '<span class="badge badge-high">DROPPED</span>'
             : '<span class="badge badge-safe">FORWARDED</span>';
-        const uploadBadge = flow.is_multipart ? ' <span class="badge badge-request">UPLOAD</span>' : '';
+        const uploadBadge = flow.is_multipart
+            ? ' <span class="badge badge-request">UPLOAD</span>'
+            : (flow.is_json_upload ? ' <span class="badge badge-request">JSON UPLOAD</span>' : '');
         item.innerHTML =
             badge + uploadBadge +
             '<span class="log-method method-' + (flow.method || 'GET') + '">' + (flow.method || 'GET') + '</span>' +
@@ -384,6 +478,7 @@ window.Intercept = (() => {
             }, 'intercept');
         });
         historyEl.prepend(item);
+        _updateHistoryCount();
     }
 
     // ── UI update ────────────────────────────────────────────────
@@ -431,6 +526,207 @@ window.Intercept = (() => {
         const d = document.createElement('div');
         d.textContent = s || '';
         return d.innerHTML;
+    }
+
+    // ── JSON file-upload rendering ──────────────────────────────
+
+    const _FN_KEYS = ['filename', 'file_name', 'name', 'fileName'];
+    const _MIME_KEYS = ['mime_type', 'content_type', 'mimeType', 'contentType', 'type'];
+    const _SIZE_KEYS = ['file_size', 'size', 'fileSize', 'content_length'];
+    const _DATA_KEYS = ['content', 'data', 'file_data', 'fileData', 'file_content', 'body', 'base64', 'b64'];
+
+    function _getFieldKey(obj, keys) {
+        for (const k of keys) { if (k in obj) return k; }
+        return null;
+    }
+
+    function _renderJsonUploadFiles(files) {
+        jsonUploadFilesEl.innerHTML = '';
+        files.forEach((entry, idx) => {
+            const f = entry.fields;
+            const fnKey = _getFieldKey(f, _FN_KEYS);
+            const mtKey = _getFieldKey(f, _MIME_KEYS);
+            const szKey = _getFieldKey(f, _SIZE_KEYS);
+            const dataKey = _getFieldKey(f, _DATA_KEYS);
+
+            const filename = fnKey ? String(f[fnKey] || '') : '';
+            const mimeType = mtKey ? String(f[mtKey] || '') : '';
+            const sizeStr = szKey != null && f[szKey] != null ? _fmtSize(Number(f[szKey])) : '';
+
+            const card = document.createElement('div');
+            card.className = 'multipart-part-card';
+            card.dataset.idx = idx;
+            card.dataset.jsonPath = entry.json_path;
+
+            // Build known-field inputs
+            const knownKeys = new Set([fnKey, mtKey, szKey, dataKey].filter(Boolean));
+            let fieldsHtml = '';
+            if (fnKey) fieldsHtml += _juField('Filename', 'ju-filename', fnKey, filename);
+            if (mtKey) fieldsHtml += _juField('MIME Type', 'ju-mimetype', mtKey, mimeType);
+            if (szKey) fieldsHtml += _juField('File Size', 'ju-filesize', szKey, String(f[szKey] ?? ''));
+            if (dataKey) fieldsHtml += _juField('Data / Content', 'ju-data', dataKey, String(f[dataKey] ?? ''), true);
+
+            // Other fields
+            for (const [k, v] of Object.entries(f)) {
+                if (knownKeys.has(k)) continue;
+                fieldsHtml += _juField(k, 'ju-other', k, String(v ?? ''));
+            }
+
+            card.innerHTML =
+                '<div class="multipart-part-header">' +
+                    '<span class="badge badge-high">FILE</span>' +
+                    '<span class="multipart-part-name">' + esc(entry.json_path) + '</span>' +
+                    '<span class="multipart-part-filename">' + esc(filename) + '</span>' +
+                    (sizeStr ? '<span class="multipart-part-size">' + sizeStr + '</span>' : '') +
+                '</div>' +
+                '<div class="multipart-part-body">' + fieldsHtml + '</div>';
+
+            card.querySelector('.multipart-part-header').addEventListener('click', (e) => {
+                e.currentTarget.classList.toggle('collapsed');
+            });
+
+            jsonUploadFilesEl.appendChild(card);
+        });
+    }
+
+    function _juField(label, cssClass, key, value, isTextarea) {
+        const keyBadge = '<span class="badge badge-low" style="margin-left:4px;font-size:9px">' + esc(key) + '</span>';
+        if (isTextarea) {
+            return '<div class="form-group" style="margin-bottom:6px">' +
+                '<label>' + esc(label) + keyBadge + '</label>' +
+                '<textarea class="' + cssClass + '" rows="3" data-key="' + _escAttr(key) + '">' + esc(value) + '</textarea>' +
+                '</div>';
+        }
+        return '<div class="form-group" style="margin-bottom:6px">' +
+            '<label>' + esc(label) + keyBadge + '</label>' +
+            '<input type="text" class="' + cssClass + '" value="' + _escAttr(value) + '" data-key="' + _escAttr(key) + '">' +
+            '</div>';
+    }
+
+    function _collectJsonUploadBody() {
+        let parsed;
+        try {
+            parsed = JSON.parse(jsonUploadRawEl.value);
+        } catch (_) {
+            return jsonUploadRawEl.value;
+        }
+
+        jsonUploadFilesEl.querySelectorAll('.multipart-part-card').forEach(card => {
+            const target = _resolveJsonPath(parsed, card.dataset.jsonPath);
+            if (!target || typeof target !== 'object') return;
+
+            card.querySelectorAll('input[data-key], textarea[data-key]').forEach(el => {
+                const key = el.dataset.key;
+                let val = el.value;
+                // Preserve number types
+                if (typeof target[key] === 'number') {
+                    const num = Number(val);
+                    if (!isNaN(num)) val = num;
+                }
+                target[key] = val;
+            });
+        });
+
+        return JSON.stringify(parsed, null, 2);
+    }
+
+    function _resolveJsonPath(obj, path) {
+        if (!path || path === '(root)') return obj;
+        const parts = path.replace(/\[(\d+)\]/g, '.$1').split('.').filter(Boolean);
+        let cur = obj;
+        for (const p of parts) {
+            if (cur == null) return null;
+            cur = cur[/^\d+$/.test(p) ? Number(p) : p];
+        }
+        return cur;
+    }
+
+    function _jsonUploadInjectData() {
+        const cards = jsonUploadFilesEl.querySelectorAll('.multipart-part-card');
+        if (cards.length === 0) return;
+        const card = cards[0];
+
+        if (card.querySelector('.ju-data')) {
+            card.querySelector('.ju-data').focus();
+            return;
+        }
+
+        const group = document.createElement('div');
+        group.className = 'form-group';
+        group.style.marginBottom = '6px';
+        group.innerHTML =
+            '<label>Injected Data <span class="badge badge-low" style="margin-left:4px;font-size:9px">content</span></label>' +
+            '<textarea class="ju-data" rows="3" data-key="content" placeholder="Paste base64-encoded file content here..."></textarea>';
+        card.querySelector('.multipart-part-body').appendChild(group);
+    }
+
+    function _applyJsonUploadPreset() {
+        const presetId = jsonUploadPresetSelect.value;
+        if (!presetId || !window.UploadPresets) return;
+        const preset = UploadPresets.find(p => p.id === presetId);
+        if (!preset) return;
+
+        const cards = jsonUploadFilesEl.querySelectorAll('.multipart-part-card');
+        if (cards.length === 0) return;
+        const card = cards[0];
+
+        // Apply filename
+        const fnInput = card.querySelector('.ju-filename');
+        if (fnInput) fnInput.value = preset.filename;
+
+        // Apply MIME type
+        const mtInput = card.querySelector('.ju-mimetype');
+        if (mtInput) mtInput.value = preset.content_type;
+
+        // Calculate payload byte size (independent of data field injection)
+        let payloadBytes = 0;
+        if (preset.is_binary && preset.content_b64) {
+            payloadBytes = preset.content_b64.length;
+        } else if (preset.content) {
+            payloadBytes = new Blob([preset.content]).size;
+        }
+
+        // Inject content into data field (base64-encode text for JSON transport)
+        let dataEl = card.querySelector('.ju-data');
+        if (!dataEl) {
+            _jsonUploadInjectData();
+            dataEl = card.querySelector('.ju-data');
+        }
+        if (dataEl) {
+            if (preset.is_binary && preset.content_b64) {
+                dataEl.value = preset.content_b64;
+            } else {
+                try { dataEl.value = btoa(preset.content || ''); } catch (_) { dataEl.value = preset.content || ''; }
+            }
+        }
+
+        // Auto-update file_size to match payload so the server doesn't
+        // reject with a size mismatch.
+        const szInput = card.querySelector('.ju-filesize');
+        if (szInput) szInput.value = String(payloadBytes);
+
+        // Store raw payload for the Copy Payload button
+        if (preset.is_binary && preset.content_b64) {
+            _lastPresetPayload = preset.content_b64;
+        } else {
+            _lastPresetPayload = preset.content || '';
+        }
+
+        // Sync changes into the raw JSON textarea
+        const rebuilt = _collectJsonUploadBody();
+        if (typeof rebuilt === 'string') jsonUploadRawEl.value = rebuilt;
+
+        jsonUploadPresetSelect.value = '';
+    }
+
+    function _copyPresetPayload() {
+        if (!_lastPresetPayload) return;
+        navigator.clipboard.writeText(_lastPresetPayload).then(() => {
+            const btn = document.getElementById('btn-json-upload-copy-payload');
+            const orig = btn.textContent;
+            btn.textContent = 'Copied!';
+            setTimeout(() => { btn.textContent = orig; }, 1500);
+        });
     }
 
     return { init, onInterceptedFlow };

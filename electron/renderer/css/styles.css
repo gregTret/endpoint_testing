@@ -1515,17 +1515,60 @@ html, body {
 
 /* ── Intercept Tab ────────────────────────────────────────────────── */
 
+.tab-pane[data-tab="intercept"] { --intercept-history-height: 200px; }
+
 .intercept-controls { display: flex; align-items: center; gap: 10px; }
 .intercept-on { background: var(--danger) !important; border-color: var(--danger) !important; }
 .intercept-off { background: var(--surface2) !important; border-color: var(--border) !important; }
 
-.intercept-editor { padding: 10px; overflow-y: auto; }
+.intercept-editor { padding: 10px; overflow-y: auto; flex: 1; min-height: 0; }
 .intercept-phase-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .intercept-actions { display: flex; gap: 8px; margin-top: 10px; }
-.intercept-placeholder { padding: 20px; text-align: center; }
+.intercept-placeholder { padding: 20px; text-align: center; flex: 1; min-height: 0; }
 
 .badge-request { background: var(--accent-dim); color: var(--accent); }
 .badge-response { background: #1a3a1a; color: var(--success); }
+
+/* Intercept history resize handle */
+#intercept-history-resize {
+    height: 4px;
+    cursor: ns-resize;
+    background: var(--border);
+    transition: background .15s;
+    flex-shrink: 0;
+}
+#intercept-history-resize:hover,
+#intercept-history-resize.dragging {
+    background: var(--accent);
+}
+
+/* Intercept history header bar */
+#intercept-history-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+.intercept-history-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+}
+
+/* Intercept history section */
+#intercept-history {
+    height: var(--intercept-history-height);
+    flex-shrink: 0;
+    overflow-y: auto;
+}
+
+/* Collapsed state */
+.tab-pane[data-tab="intercept"].history-collapsed #intercept-history-resize { display: none; }
+.tab-pane[data-tab="intercept"].history-collapsed #intercept-history { display: none; }
 
 .intercept-history-entry {
     display: flex; align-items: center; gap: 8px;
@@ -1590,6 +1633,16 @@ html, body {
     align-items: center;
 }
 .multipart-preset-row select { flex: 1; height: 28px; }
+
+/* ── JSON Upload Editor (reuses multipart card styles) ────────────── */
+#intercept-json-upload-section .multipart-part-body .badge-low {
+    font-size: 9px;
+    vertical-align: middle;
+}
+#intercept-json-upload-raw {
+    font-family: var(--mono);
+    font-size: 12px;
+}
 
 /* ── OOB Badge ────────────────────────────────────────────────────── */
 .oob-badge {

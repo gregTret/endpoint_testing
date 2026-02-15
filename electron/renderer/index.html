@@ -66,7 +66,7 @@
                     <option value="DELETE">DELETE</option>
                     <option value="PATCH">PATCH</option>
                 </select>
-                <button id="btn-clear-logs" title="Clear all logs">Clear</button>
+
             </div>
             <div id="log-list" class="scrollable"></div>
         </div>
@@ -127,7 +127,33 @@
                                 <option value="">Apply Preset...</option>
                             </select>
                             <button id="btn-multipart-apply-preset" class="btn-small">Apply</button>
+                            <button id="btn-multipart-copy-payload" class="btn-small" title="Copy raw payload to clipboard">Copy Payload</button>
                         </div>
+                    </div>
+                </div>
+                <!-- JSON File Upload Editor (shown for JSON bodies with file-like objects) -->
+                <div id="intercept-json-upload-section" class="hidden">
+                    <div class="form-group">
+                        <label>
+                            JSON File Upload
+                            <span class="badge badge-request" style="margin-left:6px">JSON UPLOAD</span>
+                        </label>
+                        <div id="intercept-json-upload-files"></div>
+                        <div class="multipart-preset-row">
+                            <button id="btn-json-upload-inject-data" class="btn-small">+ Inject Data Field</button>
+                            <select id="json-upload-preset-select">
+                                <option value="">Apply Preset...</option>
+                            </select>
+                            <button id="btn-json-upload-apply-preset" class="btn-small">Apply</button>
+                            <button id="btn-json-upload-copy-payload" class="btn-small" title="Copy raw payload to clipboard for pasting into the Azure PUT body">Copy Payload</button>
+                        </div>
+                    </div>
+                    <div class="form-group" style="margin-top:8px">
+                        <label>
+                            Raw JSON
+                            <span class="badge badge-low" style="margin-left:4px">FALLBACK</span>
+                        </label>
+                        <textarea id="intercept-json-upload-raw" rows="6"></textarea>
                     </div>
                 </div>
                 <div id="intercept-response-section" class="hidden">
@@ -151,6 +177,14 @@
             </div>
             <div id="intercept-empty" class="intercept-placeholder">
                 <p class="placeholder-text">Intercept is disabled. Toggle above to start intercepting proxy traffic.</p>
+            </div>
+            <div id="intercept-history-resize"></div>
+            <div id="intercept-history-header">
+                <span class="intercept-history-title">History</span>
+                <span id="intercept-history-count" class="status-label">0</span>
+                <span style="flex:1"></span>
+                <button id="btn-clear-intercept-history" class="btn-small" title="Clear history">Clear</button>
+                <button id="btn-collapse-intercept-history" class="btn-small" title="Toggle history">&#9660;</button>
             </div>
             <div id="intercept-history" class="scrollable"></div>
         </div>
@@ -413,6 +447,34 @@
                         </tbody>
                     </table>
                     <p class="info-hint">URLs use the OOB server configured in Settings. Click a URL to open it, or right-click to copy.</p>
+                </div>
+
+                <div class="info-section">
+                    <div class="info-section-title">Upload Preset Callbacks</div>
+                    <p class="info-desc">Manual file upload presets use scan key <code>upload</code>. All OOB hits land at <code>/{key}/{token}</code> and can be queried via the API.</p>
+                    <table class="info-endpoint-table">
+                        <thead>
+                            <tr><th>Method</th><th>Endpoint</th><th>Description</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><span class="info-method method-GET">GET</span></td>
+                                <td><span class="info-url" data-oob-path="/api/callbacks/upload">/api/callbacks/upload</span></td>
+                                <td>List all upload preset callback hits</td>
+                            </tr>
+                            <tr>
+                                <td><span class="info-method method-GET">GET</span></td>
+                                <td><span class="info-url" data-oob-path="/api/callbacks/upload/{token}">/api/callbacks/upload/{token}</span></td>
+                                <td>List hits for a specific trigger (e.g. <code>pdf-click</code>, <code>onload</code>, <code>fetch-cookies</code>)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="info-method method-DELETE">DELETE</span></td>
+                                <td><span class="info-url" data-oob-path="/api/callbacks/upload">/api/callbacks/upload</span></td>
+                                <td>Clear all upload preset callback data</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p class="info-hint">Token names match the trigger: <code>onload</code>, <code>hover</code>, <code>click</code>, <code>css-import</code>, <code>image-href</code>, <code>use-href</code>, <code>pdf-click</code>, <code>xxe-http</code>, <code>svg-xxe</code>, <code>fetch-exfil</code>, <code>fetch-cookies</code>, <code>fetch-ls</code>, <code>fetch-url</code>, <code>fname-exfil</code>, <code>rfi-php</code>, <code>docx-ssrf</code>, etc.</p>
                 </div>
 
             </div>

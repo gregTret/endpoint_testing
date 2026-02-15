@@ -140,7 +140,7 @@ function createWindow() {
  * scoped to the given workspace ID.  Cookies, localStorage, cache
  * are all persisted separately per workspace.
  */
-function createBrowserView(workspaceId, initialUrl) {
+async function createBrowserView(workspaceId, initialUrl) {
     // Detach + destroy the previous view if any
     if (browserView) {
         mainWindow.setBrowserView(null);
@@ -157,8 +157,12 @@ function createBrowserView(workspaceId, initialUrl) {
         },
     });
 
-    browserView.webContents.session.setProxy({
-        proxyRules: `http=${PROXY_HOST}:${PROXY_PORT};https=${PROXY_HOST}:${PROXY_PORT}`,
+    // Route ALL traffic through mitmproxy — await to ensure proxy is
+    // active before any requests fire.  Catch-all format ensures no
+    // traffic (Azure Blob, CDN, etc.) slips through.
+    await browserView.webContents.session.setProxy({
+        proxyRules: `http://${PROXY_HOST}:${PROXY_PORT}`,
+        proxyBypassRules: '',
     });
 
     // Trust mitmproxy's TLS certificates
@@ -325,9 +329,9 @@ ipcMain.handle('get-current-url', () => {
     return browserView ? browserView.webContents.getURL() : '';
 });
 
-ipcMain.on('show-browser', (_e, workspaceId, lastUrl) => {
+ipcMain.on('show-browser', async (_e, workspaceId, lastUrl) => {
     if (!mainWindow) return;
-    createBrowserView(workspaceId || 'default', lastUrl);
+    await createBrowserView(workspaceId || 'default', lastUrl);
 });
 
 ipcMain.on('set-panel-width', (_e, width) => {

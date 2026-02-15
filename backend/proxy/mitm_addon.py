@@ -94,6 +94,8 @@ class InterceptAddon:
                         flow.request.content = rebuild_multipart(
                             mods["multipart_parts"], boundary
                         )
+                elif "json_upload_body" in mods:
+                    flow.request.set_text(mods["json_upload_body"])
                 elif "body" in mods:
                     flow.request.set_text(mods["body"])
 

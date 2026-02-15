@@ -7,18 +7,15 @@ window.LogViewer = (() => {
     let selectedId = null;
 
     // ── DOM refs (resolved after DOMContentLoaded) ──
-    let listEl, searchEl, methodFilterEl, clearBtn, detailPanel, detailContent, detailTitle;
+    let listEl, searchEl, methodFilterEl, detailPanel, detailContent, detailTitle;
 
     function init() {
         listEl        = document.getElementById('log-list');
         searchEl      = document.getElementById('log-search');
         methodFilterEl= document.getElementById('log-method-filter');
-        clearBtn      = document.getElementById('btn-clear-logs');
         detailPanel   = document.getElementById('detail-panel');
         detailContent = document.getElementById('detail-content');
         detailTitle   = document.getElementById('detail-title');
-
-        clearBtn.addEventListener('click', clearLogs);
         searchEl.addEventListener('input', renderList);
         methodFilterEl.addEventListener('change', renderList);
         document.getElementById('btn-close-detail').addEventListener('click', closeDetail);

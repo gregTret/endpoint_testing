@@ -1,5 +1,6 @@
 """Thread-safe intercept state shared between mitmproxy and FastAPI."""
 
+import json as _json
 import logging
 import threading
 import uuid
@@ -124,6 +125,42 @@ class InterceptState:
         pf.event.set()
         return True
 
+    # ── JSON file-upload detection ────────────────────────────────
+
+    _FILENAME_KEYS = frozenset({"filename", "file_name", "fileName"})
+    _MIMETYPE_KEYS = frozenset({"mime_type", "content_type", "mimeType", "contentType", "type"})
+    _SIZE_KEYS = frozenset({"file_size", "size", "fileSize", "content_length"})
+
+    @staticmethod
+    def _looks_like_file_object(obj: dict) -> bool:
+        """Return True if a dict looks like a JSON file-upload descriptor."""
+        if not isinstance(obj, dict):
+            return False
+        keys = set(obj.keys())
+        has_filename = bool(keys & InterceptState._FILENAME_KEYS)
+        has_mime = bool(keys & InterceptState._MIMETYPE_KEYS)
+        has_size = bool(keys & InterceptState._SIZE_KEYS)
+        return has_filename and (has_mime or has_size)
+
+    @staticmethod
+    def _extract_json_file_objects(parsed) -> list[dict] | None:
+        """Walk parsed JSON and return file-upload-like objects with their paths."""
+        results: list[dict] = []
+
+        def _walk(node, path=""):
+            if isinstance(node, dict):
+                if InterceptState._looks_like_file_object(node):
+                    results.append({"json_path": path or "(root)", "fields": node})
+                    return
+                for key, val in node.items():
+                    _walk(val, f"{path}.{key}" if path else key)
+            elif isinstance(node, list):
+                for i, val in enumerate(node):
+                    _walk(val, f"{path}[{i}]")
+
+        _walk(parsed)
+        return results if results else None
+
     # ── serialisation ─────────────────────────────────────────────
 
     def _serialize(self, pf: PendingFlow) -> dict:
@@ -162,6 +199,19 @@ class InterceptState:
                     data["is_multipart"] = False
             except Exception:
                 data["is_multipart"] = False
+
+            # Detect JSON file uploads (application/json with file-like objects)
+            if not data.get("is_multipart"):
+                data["is_json_upload"] = False
+                if content_type.lower().strip().startswith("application/json"):
+                    try:
+                        parsed = _json.loads(req_body)
+                        file_objects = self._extract_json_file_objects(parsed)
+                        if file_objects:
+                            data["is_json_upload"] = True
+                            data["json_upload_files"] = file_objects
+                    except Exception:
+                        pass
         elif pf.phase == "response":
             data["request_headers"] = dict(flow.request.headers)
             data["request_body"] = req_body[:LOG_BODY_CAP]
