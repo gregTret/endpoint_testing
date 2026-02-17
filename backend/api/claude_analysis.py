@@ -22,6 +22,13 @@ from storage.db import (
     delete_ai_analysis_by_id,
 )
 
+from api.ai_cache import (
+    get_cached_suggestion, set_cached_suggestion,
+    get_triage_state, partition_endpoints, update_triage_state,
+    set_preview_cache, consume_preview_cache, PreviewCache,
+    clear_workspace_cache, get_cache_stats,
+)
+
 log = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -640,6 +647,64 @@ Rules:
 {traffic_json}{vuln_section}{coverage_section}"""
 
 
+def _build_incremental_triage_prompt(new_endpoints: list[dict],
+                                     prior_summary: str,
+                                     prior_findings: list[dict],
+                                     prior_upload_endpoints: list[dict],
+                                     prior_priority_targets: list[dict],
+                                     already_analyzed_count: int,
+                                     confirmed_vulns: list[dict] | None = None,
+                                     scan_coverage: list[dict] | None = None,
+                                     auth_context: dict | None = None) -> str:
+    """Build an incremental triage prompt that only sends NEW endpoints to
+    Claude while providing condensed context from prior analysis runs.
+    """
+    confirmed_vulns = confirmed_vulns or []
+    scan_coverage = scan_coverage or []
+
+    # Build prior context section
+    prior_targets_summary = ""
+    if prior_priority_targets:
+        lines = []
+        for t in prior_priority_targets[:20]:
+            lines.append(f"  - {t.get('method', 'GET')} {t.get('url', '')} — {(t.get('risk_reason') or '')[:100]}")
+        prior_targets_summary = "\n".join(lines)
+
+    prior_uploads_summary = ""
+    if prior_upload_endpoints:
+        lines = []
+        for u in prior_upload_endpoints:
+            lines.append(f"  - {u.get('method', 'POST')} {u.get('url', '')} — {(u.get('reason') or '')[:80]}")
+        prior_uploads_summary = "\n".join(lines)
+
+    prior_section = f"""=== PRIOR ANALYSIS CONTEXT ===
+You previously analysed {already_analyzed_count} endpoints for this application.
+
+Prior summary: {prior_summary}
+"""
+    if prior_uploads_summary:
+        prior_section += f"\nPreviously identified upload endpoints:\n{prior_uploads_summary}\n"
+    if prior_targets_summary:
+        prior_section += f"\nPreviously prioritised targets:\n{prior_targets_summary}\n"
+
+    prior_section += f"""
+The {len(new_endpoints)} endpoints below are NEW traffic captured since the last analysis.
+Analyse them in context of the prior findings above. Update priorities if needed —
+a new endpoint may be higher risk than previously ranked ones.
+Do NOT repeat findings that were already identified unless a new endpoint changes
+the risk assessment.
+
+"""
+
+    # Build the standard triage prompt for the new endpoints only
+    standard_prompt = _build_triage_prompt(
+        new_endpoints, confirmed_vulns, scan_coverage, auth_context
+    )
+
+    # Prepend prior context
+    return prior_section + standard_prompt
+
+
 _MODEL_MAP = {
     "opus": "opus",
     "sonnet": "sonnet",
@@ -1113,6 +1178,7 @@ async def _run_haiku_suggestions(text: str, context: dict) -> dict:
     url = context.get("url", "")
     full_body = (context.get("full_body") or "")[:500]
     full_headers = context.get("full_headers") or {}
+    is_json_value = context.get("is_json_value", False)
 
     # Build compact context snippet
     context_snippet = f"Method: {method}, URL: {url}"
@@ -1122,6 +1188,23 @@ async def _run_haiku_suggestions(text: str, context: dict) -> dict:
         header_keys = list(full_headers.keys())[:10]
         context_snippet += f", Headers present: {', '.join(header_keys)}"
 
+    # JSON-safety constraint when the highlighted text sits inside a JSON string value
+    json_constraint = ""
+    if is_json_value:
+        json_constraint = (
+            "\n\nIMPORTANT: The highlighted text is inside a JSON string value "
+            '(i.e. between double quotes in a JSON body). '
+            "Each payload will be substituted into a JSON string, so:\n"
+            "- Prefer payloads that work AS plain string values: SQL injection strings, "
+            "XSS tags, command injection separators, SSTI template expressions, "
+            "path traversal sequences.\n"
+            "- Do NOT return raw JSON objects/arrays as payloads — they would just "
+            "become escaped string literals, not actual operator injection.\n"
+            "- If you need a double-quote inside the payload, escape it as \\\".\n"
+            "- The tool will handle JSON-escaping the payload before insertion, "
+            "so write payloads as plain text (not pre-escaped)."
+        )
+
     prompt = (
         "You are a penetration testing assistant. Given this HTTP request context, "
         "suggest 6-8 injection payloads to test for the highlighted value.\n\n"
@@ -1129,7 +1212,8 @@ async def _run_haiku_suggestions(text: str, context: dict) -> dict:
         f"Field type: {field_type}\n"
         f"Field name: {field_name}\n"
         f"Request: {method} {url}\n"
-        f"Context: {context_snippet}\n\n"
+        f"Context: {context_snippet}\n"
+        f"{json_constraint}\n\n"
         "Return ONLY a JSON array of objects with keys: "
         "\"payload\" (the injection string), "
         "\"type\" (e.g. sqli, xss, cmd, ssti, nosql, traversal, ssrf, xxe, idor), "
@@ -1261,18 +1345,37 @@ def _parse_suggestions_output(raw: str) -> list | None:
 async def ai_suggest_injections(data: dict = None):
     """Fast AI-powered injection suggestions for highlighted text in the interceptor."""
     data = data or {}
-    text = (data.get("text") or "").strip()
+    text = (data.get("text") or "").strip()[:500]
     context = data.get("context") or {}
 
     if not text:
         return JSONResponse(status_code=400, content={"error": "text is required"})
 
     field_type = context.get("field_type", "param")
+    field_name = context.get("field_name", "unknown")
+    method = context.get("method", "GET")
+    url = context.get("url", "")
+    is_json_value = bool(context.get("is_json_value", False))
+    workspace_id = _get_workspace()
 
+    # Check suggest cache first
+    log.info("Suggest request: ws=%s text=%.30s field=%s/%s method=%s url=%.60s json=%s",
+             workspace_id, text, field_type, field_name, method, url, is_json_value)
+    cached = get_cached_suggestion(workspace_id, text, field_type, field_name, method, url,
+                                   is_json_value=is_json_value)
+    if cached is not None:
+        log.info("CACHE HIT — returning %d cached suggestions instantly", len(cached))
+        return {"suggestions": cached, "cached": True}
+
+    log.info("CACHE MISS — calling Claude haiku...")
     # Try Claude CLI (haiku) first
     result = await _run_haiku_suggestions(text, context)
 
     if "suggestions" in result:
+        # Cache successful Claude responses (not fallbacks)
+        set_cached_suggestion(workspace_id, text, field_type, field_name, method, url,
+                              result["suggestions"], is_json_value=is_json_value)
+        log.info("Cached %d suggestions for future use", len(result["suggestions"]))
         return result
 
     # Fallback to hardcoded suggestions
@@ -1303,8 +1406,21 @@ async def ai_preview(data: dict = None):
     # Get unique hosts for the host filter dropdown
     hosts = sorted({e.get("host", "") for e in logs if e.get("host")})
 
+    # Store in preview cache so /ai/triage can reuse without re-fetching
+    set_preview_cache(workspace_id, PreviewCache(
+        endpoints=endpoints,
+        confirmed_vulns=confirmed_vulns,
+        scan_coverage=scan_coverage,
+        host_filter=host_filter,
+    ))
+
+    # Report how many are new vs cached from prior triage runs
+    new_eps, cached_count = partition_endpoints(workspace_id, endpoints, host_filter)
+
     return {
         "endpoint_count": len(endpoints),
+        "new_endpoint_count": len(new_eps),
+        "cached_endpoint_count": cached_count,
         "total_logs": len(logs),
         "scan_result_count": len(raw_scans),
         "confirmed_vulns": len(confirmed_vulns),
@@ -1661,6 +1777,7 @@ async def ai_clear_results():
     """Clear AI results for the active workspace."""
     workspace_id = _get_workspace()
     await delete_ai_analysis_results(workspace_id)
+    clear_workspace_cache(workspace_id)
     return {"ok": True}
 
 
@@ -1669,6 +1786,21 @@ async def ai_delete_result(result_id: int):
     """Delete a single AI analysis result by ID."""
     await delete_ai_analysis_by_id(result_id)
     return {"ok": True}
+
+
+@router.post("/ai/cache/clear")
+async def ai_cache_clear():
+    """Clear all AI caches for the active workspace."""
+    workspace_id = _get_workspace()
+    clear_workspace_cache(workspace_id)
+    return {"ok": True}
+
+
+@router.get("/ai/cache/stats")
+async def ai_cache_stats():
+    """Return AI cache statistics for the active workspace."""
+    workspace_id = _get_workspace()
+    return get_cache_stats(workspace_id)
 
 
 # ── Triage Endpoints ────────────────────────────────────────────────
@@ -1689,7 +1821,12 @@ async def ai_triage(data: dict = None):
     model = data.get("model", "sonnet")
     host_filter = (data.get("host_filter") or "").strip()
     auth_context = data.get("auth_context") or _auth_context
+    force_full = bool(data.get("force_full", False))
     workspace_id = _get_workspace()
+
+    # If force_full requested, clear the triage cache first
+    if force_full:
+        clear_workspace_cache(workspace_id)
 
     _ai_status = {
         "running": True,
@@ -1701,14 +1838,21 @@ async def ai_triage(data: dict = None):
     async def run_triage():
         global _ai_status
         try:
-            # Collect traffic
-            logs = await get_request_logs(session_id=workspace_id, limit=2000)
-            endpoints = _prepare_traffic_payload(logs, host_filter, auth_context=auth_context)
-            _ai_status["endpoint_count"] = len(endpoints)
+            # Try preview cache first to avoid re-fetching from DB
+            preview = consume_preview_cache(workspace_id, host_filter)
+            if preview:
+                endpoints = preview.endpoints
+                confirmed_vulns = preview.confirmed_vulns
+                scan_coverage = preview.scan_coverage
+                log.info("Using preview cache: %d endpoints", len(endpoints))
+            else:
+                # Collect traffic fresh
+                logs = await get_request_logs(session_id=workspace_id, limit=2000)
+                endpoints = _prepare_traffic_payload(logs, host_filter, auth_context=auth_context)
+                raw_scans = await get_scan_results_by_workspace(workspace_id, limit=1000)
+                confirmed_vulns, scan_coverage = _prepare_scan_payload(raw_scans)
 
-            # Collect existing scan results
-            raw_scans = await get_scan_results_by_workspace(workspace_id, limit=1000)
-            confirmed_vulns, scan_coverage = _prepare_scan_payload(raw_scans)
+            _ai_status["endpoint_count"] = len(endpoints)
 
             if not endpoints:
                 _ai_status["running"] = False
@@ -1716,9 +1860,42 @@ async def ai_triage(data: dict = None):
                 _ai_status["phase"] = "done"
                 return
 
-            # Build triage prompt and call Claude
+            # Partition into new vs already-analysed endpoints
+            new_eps, cached_count = partition_endpoints(workspace_id, endpoints, host_filter)
+            triage_state = get_triage_state(workspace_id)
+
+            if not new_eps and not force_full:
+                # All endpoints already analysed — nothing new to send
+                _ai_status["running"] = False
+                _ai_status["phase"] = "done"
+                _ai_status["error"] = (
+                    f"All {cached_count} endpoints were already analysed. "
+                    "Browse more pages to capture new traffic, or clear the AI cache to force a full re-analysis."
+                )
+                return
+
+            # Build prompt — incremental if we have prior context, full otherwise
             _ai_status["phase"] = "analyzing"
-            prompt = _build_triage_prompt(endpoints, confirmed_vulns, scan_coverage, auth_context)
+            if triage_state.prior_summary and not force_full:
+                log.info("Building incremental triage prompt: %d new endpoints (%d cached)",
+                         len(new_eps), cached_count)
+                prompt = _build_incremental_triage_prompt(
+                    new_eps,
+                    prior_summary=triage_state.prior_summary,
+                    prior_findings=triage_state.prior_findings,
+                    prior_upload_endpoints=triage_state.prior_upload_endpoints,
+                    prior_priority_targets=triage_state.prior_priority_targets,
+                    already_analyzed_count=cached_count,
+                    confirmed_vulns=confirmed_vulns,
+                    scan_coverage=scan_coverage,
+                    auth_context=auth_context,
+                )
+                endpoints_for_prompt = new_eps
+            else:
+                log.info("Building full triage prompt: %d endpoints", len(endpoints))
+                prompt = _build_triage_prompt(endpoints, confirmed_vulns, scan_coverage, auth_context)
+                endpoints_for_prompt = endpoints
+
             result = await run_claude_with_prompt(prompt, model=model)
 
             if "error" in result and "priority_targets" not in result:
@@ -1733,6 +1910,35 @@ async def ai_triage(data: dict = None):
             priority_targets = result.get("priority_targets", [])
             findings = result.get("findings", [])
 
+            # Merge with prior results if incremental
+            if triage_state.prior_summary and not force_full:
+                # Merge upload endpoints (dedupe by URL)
+                seen_urls = {u.get("url") for u in upload_endpoints}
+                for u in triage_state.prior_upload_endpoints:
+                    if u.get("url") not in seen_urls:
+                        upload_endpoints.append(u)
+
+                # Merge priority targets — new ones go first, then prior
+                seen_target_urls = {t.get("url") for t in priority_targets}
+                for t in triage_state.prior_priority_targets:
+                    if t.get("url") not in seen_target_urls:
+                        priority_targets.append(t)
+
+                # Re-number priorities
+                for i, t in enumerate(priority_targets):
+                    t["priority"] = i + 1
+
+                # Merge findings
+                seen_finding_titles = {f.get("title") for f in findings}
+                for f in triage_state.prior_findings:
+                    if f.get("title") not in seen_finding_titles:
+                        findings.append(f)
+
+            # Update result with merged data
+            result["upload_endpoints"] = upload_endpoints
+            result["priority_targets"] = priority_targets
+            result["findings"] = findings
+
             raw_response = json.dumps(result, indent=2, default=str)
 
             # Save to DB with "triage:" prefix on model to distinguish
@@ -1746,10 +1952,25 @@ async def ai_triage(data: dict = None):
                 raw_response=raw_response,
             )
 
+            # Update triage state cache
+            new_keys = [f"{ep.get('method', 'GET')} {ep.get('path', '')}"
+                        for ep in endpoints_for_prompt]
+            update_triage_state(
+                workspace_id, new_keys,
+                summary=summary,
+                findings=findings,
+                upload_endpoints=upload_endpoints,
+                priority_targets=priority_targets,
+                host_filter=host_filter,
+                confirmed_vuln_count=len(confirmed_vulns),
+                scan_coverage_count=len(scan_coverage),
+            )
+
             _ai_status["running"] = False
             _ai_status["phase"] = "done"
-            log.info("AI triage complete: %d upload endpoints, %d priority targets",
-                     len(upload_endpoints), len(priority_targets))
+            log.info("AI triage complete: %d upload endpoints, %d priority targets (incremental=%s)",
+                     len(upload_endpoints), len(priority_targets),
+                     bool(triage_state.prior_summary and not force_full))
 
         except Exception as e:
             log.error("AI triage failed: %s", e, exc_info=True)

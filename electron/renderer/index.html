@@ -116,11 +116,11 @@
                     </div>
                 </div>
                 <div class="form-group">
-                    <label>Headers</label>
+                    <label>Headers <button class="btn-ai-suggest-body" id="btn-intercept-ai-headers" title="Send all headers to AI for injection suggestions">AI Suggest</button></label>
                     <textarea id="intercept-headers" rows="6"></textarea>
                 </div>
                 <div class="form-group" id="intercept-body-group">
-                    <label>Body</label>
+                    <label>Body <button class="btn-ai-suggest-body" id="btn-intercept-ai-body" title="Send entire body to AI for injection suggestions">AI Suggest</button></label>
                     <textarea id="intercept-body" rows="6"></textarea>
                 </div>
                 <!-- Multipart File Upload Editor (shown for multipart/form-data requests) -->
@@ -183,6 +183,7 @@
                 <div class="intercept-actions">
                     <button id="btn-intercept-forward" class="btn-primary">Forward</button>
                     <button id="btn-intercept-drop" class="btn-small danger">Drop</button>
+                    <button id="btn-intercept-revert" class="btn-small hidden" title="Revert all fields to original values">Revert</button>
                 </div>
             </div>
             <div id="intercept-empty" class="intercept-placeholder">
@@ -361,6 +362,7 @@
                             </select>
                             <input type="text" id="repeater-url" placeholder="https://..." style="flex:1">
                             <button id="btn-repeater-send" class="btn-primary" style="flex:0 0 70px;width:auto">Send</button>
+                            <button id="btn-repeater-revert" class="btn-small hidden" title="Revert all fields to original values" style="flex:0 0 auto">Revert</button>
                         </div>
                     </div>
                     <div class="form-group">
@@ -368,7 +370,7 @@
                         <textarea id="repeater-headers" rows="3" placeholder='{"Authorization": "Bearer ..."}'></textarea>
                     </div>
                     <div class="form-group">
-                        <label>Body</label>
+                        <label>Body <button class="btn-ai-suggest-body" id="btn-repeater-ai-body" title="Send entire body to AI for injection suggestions">AI Suggest</button></label>
                         <textarea id="repeater-body" rows="4" placeholder="Request body..."></textarea>
                     </div>
                     <div id="repeater-response" class="scrollable"></div>
@@ -1063,6 +1065,7 @@
 <script src="js/utils.js"></script>
 <script src="js/workspace.js"></script>
 <script src="js/send-to.js"></script>
+<script src="js/ai-triage.js"></script>
 <script src="js/log-viewer.js"></script>
 <script src="js/site-map.js"></script>
 <script src="js/upload-presets.js"></script>
@@ -1072,7 +1075,6 @@
 <script src="js/repeater.js"></script>
 <script src="js/credentials.js"></script>
 <script src="js/ai-analysis.js"></script>
-<script src="js/ai-triage.js"></script>
 <script src="js/ai-suggest.js"></script>
 <script src="js/auto-scan.js"></script>
 <script src="js/analytics.js"></script>

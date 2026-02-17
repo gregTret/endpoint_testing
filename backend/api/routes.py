@@ -150,9 +150,17 @@ async def workspaces_create(data: dict):
 @router.post("/workspaces/active")
 async def workspaces_set_active(data: dict):
     global _active_workspace
+    old_ws = _active_workspace
     ws_id = data.get("id", "default")
     _active_workspace = ws_id
     await update_workspace_opened(ws_id)
+    # Free memory from AI caches for the old workspace
+    if old_ws and old_ws != ws_id:
+        try:
+            from api.ai_cache import clear_workspace_cache
+            clear_workspace_cache(old_ws)
+        except Exception:
+            pass
     log.info("active workspace set to %s", ws_id)
     return {"active": ws_id}
 
@@ -208,6 +216,12 @@ async def get_log(log_id: int):
 @router.delete("/logs")
 async def delete_logs(session_id: str = None):
     await clear_request_logs(session_id or _active_workspace)
+    # Triage/preview caches reference these logs — invalidate them
+    try:
+        from api.ai_cache import clear_workspace_cache
+        clear_workspace_cache(_active_workspace)
+    except Exception:
+        pass
     return {"status": "cleared"}
 
 
