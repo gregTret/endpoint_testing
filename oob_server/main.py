@@ -50,7 +50,20 @@ app.add_middleware(
 
 
 @app.get("/api/health")
-async def health():
+async def health(request: Request):
+    await _broadcast({
+        "id": 0,
+        "key": "api",
+        "token": "health",
+        "timestamp": time.time(),
+        "source_ip": request.client.host if request.client else "unknown",
+        "method": "GET",
+        "path": "/api/health",
+        "headers": dict(request.headers),
+        "body": "",
+        "query_params": dict(request.query_params),
+        "extra_path": None,
+    })
     return {"status": "ok"}
 
 

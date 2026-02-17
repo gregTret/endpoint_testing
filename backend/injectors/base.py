@@ -406,10 +406,11 @@ def _extract_body_keys(body: str) -> list[str]:
 
 
 def _walk_keys(obj: dict, prefix: str, out: list[str]) -> None:
-    """Recursively collect dot-notation paths for all leaf values."""
+    """Recursively collect dot-notation paths for all values, including nested objects."""
     for k, v in obj.items():
         path = f"{prefix}{k}" if not prefix else f"{prefix}.{k}"
         if isinstance(v, dict):
+            out.append(path)
             _walk_keys(v, path, out)
         else:
             out.append(path)
