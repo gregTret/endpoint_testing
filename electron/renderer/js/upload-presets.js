@@ -2,7 +2,8 @@
  * Upload attack presets for the intercept multipart editor.
  *
  * All payload content is stored base64-encoded to avoid AV false positives
- * on security-testing strings. Decoded at runtime via the _d() helper.
+ * on security-testing strings. Decoded lazily using the OOB server URL
+ * from Settings (fetched via /api/settings/oob).
  *
  * Select a preset from the dropdown, click Apply, review, then Forward.
  * One request at a time, fully manual.
@@ -10,13 +11,14 @@
  * OOB presets use the format: http://{CALLBACK}/upload/{token}
  * where "upload" is the fixed scan key and {token} identifies the trigger.
  * Query all manual upload hits: GET /api/callbacks/upload
- *
- * Update OOB_CALLBACK_URL when your tunnel/collaborator URL changes.
  */
-window.OOB_CALLBACK_URL = 'rich-brother-newsletter-locally.trycloudflare.com';
 
 window.UploadPresets = (() => {
-    const _d = (b64) => atob(b64).replace(/\{\{CALLBACK\}\}/g, window.OOB_CALLBACK_URL);
+    function _getOobUrl() {
+        const el = document.getElementById('oob-server-url');
+        return (el && el.value) ? el.value.trim().replace(/\/+$/, '') : '';
+    }
+    const _d = (b64) => atob(b64).replace(/\{\{CALLBACK\}\}/g, _getOobUrl());
 
     const presets = [
 
@@ -485,10 +487,15 @@ window.UploadPresets = (() => {
         },
     ];
 
-    // Decode all _enc fields into content at load time
+    // Keep _enc raw — decode lazily when accessed so OOB URL is always current
     return presets.map(p => {
         if (p._enc) {
-            p.content = _d(p._enc);
+            const raw = p._enc;
+            Object.defineProperty(p, 'content', {
+                get() { return _d(raw); },
+                enumerable: true,
+                configurable: true,
+            });
             delete p._enc;
         }
         return p;

