@@ -579,6 +579,7 @@ EPTUtils.bodyPreBlock(r.response_body || '') +
         for (const [k, v] of Object.entries(obj)) {
             const path = prefix ? `${prefix}.${k}` : k;
             if (v && typeof v === 'object' && !Array.isArray(v)) {
+                out.push({ source: 'body', key: path });
                 walkKeys(v, path, out);
             } else {
                 out.push({ source: 'body', key: path });
