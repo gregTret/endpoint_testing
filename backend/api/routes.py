@@ -46,10 +46,12 @@ from storage.db import (
 )
 
 from api.claude_analysis import router as ai_router
+from api.auto_scan import router as auto_scan_router
 
 log = logging.getLogger(__name__)
 router = APIRouter()
 router.include_router(ai_router)
+router.include_router(auto_scan_router)
 
 # ── Injector registry (lazy-loaded for fast startup) ──────────────
 _injectors_loaded = False

@@ -12,12 +12,14 @@ window.SendTo = (() => {
     /**
      * Register a tab as a send-to target.
      * @param {string} tabId   Tab identifier matching data-tab attribute
-     * @param {object} config  { label: string, receive: function(data) }
+     * @param {object} config  { label: string, receive: function(data), tab?: string }
+     *   - tab: optional override for the data-tab to switch to (useful for sub-tabs)
      */
     function register(tabId, config) {
         _registry[tabId] = {
             label: config.label || tabId,
             receive: config.receive,
+            tab: config.tab || tabId,
         };
     }
 
@@ -38,7 +40,7 @@ window.SendTo = (() => {
         const target = _registry[tabId];
         if (!target) return;
         target.receive(data);
-        _switchTab(tabId);
+        _switchTab(target.tab);
     }
 
     /**

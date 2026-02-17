@@ -73,6 +73,9 @@
         OobUI.init();
         Repeater.init();
         AiAnalysis.init();
+        if (typeof AiTriage !== 'undefined') AiTriage.init();
+        if (typeof AiSuggest !== 'undefined') AiSuggest.init();
+        if (typeof AutoScan !== 'undefined') AutoScan.init();
         Analytics.init();
         PayloadEditor.init();
 
@@ -155,6 +158,8 @@
         if (OobUI.loadHistory) OobUI.loadHistory();
         if (Repeater.loadHistory) Repeater.loadHistory();
         if (AiAnalysis.loadHistory) AiAnalysis.loadHistory();
+        if (typeof AiTriage !== 'undefined' && AiTriage.loadHistory) AiTriage.loadHistory();
+        if (AutoScan.loadHistory) AutoScan.loadHistory();
         if (PayloadEditor.refresh) PayloadEditor.refresh();
         if (window._reloadOobSettings) window._reloadOobSettings();
         if (window._reloadDefaultHeaders) window._reloadDefaultHeaders();
@@ -351,6 +356,7 @@
                 if (msg.type === 'request_log' && msg.data) {
                     LogViewer.addEntry(msg.data);
                     SiteMap.addUrl(msg.data.url);
+                    SiteMap.addCrawlRequest(msg.data);
                 } else if (msg.type === 'intercepted_flow' && msg.data) {
                     Intercept.onInterceptedFlow(msg.data);
                 }
@@ -412,6 +418,8 @@
         // Load data when switching to tabs that need it
         if (tabName === 'analytics' && Analytics.refresh) Analytics.refresh();
         if (tabName === 'ai' && AiAnalysis.refresh) AiAnalysis.refresh();
+        if (tabName === 'ai' && typeof AiTriage !== 'undefined' && AiTriage.refresh) AiTriage.refresh();
+        if (tabName === 'ai' && AutoScan.refresh) AutoScan.refresh();
         if (tabName === 'info') refreshInfoTab();
     }
 

@@ -174,6 +174,23 @@ async def init_db():
             )
         """)
 
+        # ── Auto Scan Sessions ──
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS auto_scan_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workspace_id TEXT NOT NULL,
+                config_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'pending',
+                phase TEXT NOT NULL DEFAULT '',
+                results_json TEXT NOT NULL DEFAULT '{}',
+                started_at TEXT NOT NULL,
+                completed_at TEXT DEFAULT NULL
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_auto_scan_workspace ON auto_scan_sessions(workspace_id)"
+        )
+
         # ── AI Analysis Results ──
         await db.execute("""
             CREATE TABLE IF NOT EXISTS ai_analysis_results (
@@ -248,6 +265,7 @@ async def delete_workspace(workspace_id: str) -> None:
         await db.execute("DELETE FROM payload_config WHERE workspace_id = ?", (workspace_id,))
         await db.execute("DELETE FROM workspace_settings WHERE workspace_id = ?", (workspace_id,))
         await db.execute("DELETE FROM ai_analysis_results WHERE workspace_id = ?", (workspace_id,))
+        await db.execute("DELETE FROM auto_scan_sessions WHERE workspace_id = ?", (workspace_id,))
         await db.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
         await db.commit()
 
@@ -712,6 +730,55 @@ async def delete_workspace_setting(workspace_id: str, key: str) -> None:
             (workspace_id, key),
         )
         await db.commit()
+
+
+# ── Auto Scan Sessions ────────────────────────────────────────────
+
+
+async def save_auto_scan_session(workspace_id: str, config: dict, results_summary: dict) -> int:
+    """Save a record of an auto-scan run. Returns the new row ID."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "INSERT INTO auto_scan_sessions "
+            "(workspace_id, config_json, status, phase, results_json, started_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (workspace_id, json.dumps(config), results_summary.get("status", "pending"),
+             results_summary.get("phase", ""), json.dumps(results_summary), now),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def update_auto_scan_session(session_id: int, status: str, phase: str, results_summary: dict) -> None:
+    """Update an existing auto-scan session record."""
+    from datetime import datetime, timezone
+    async with aiosqlite.connect(DB_PATH) as db:
+        completed = datetime.now(timezone.utc).isoformat() if status in ("completed", "failed", "stopped") else None
+        await db.execute(
+            "UPDATE auto_scan_sessions SET status=?, phase=?, results_json=?, completed_at=? WHERE id=?",
+            (status, phase, json.dumps(results_summary), completed, session_id),
+        )
+        await db.commit()
+
+
+async def get_auto_scan_sessions(workspace_id: str, limit: int = 20) -> list[dict]:
+    """Retrieve past auto-scan sessions for a workspace, newest first."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM auto_scan_sessions WHERE workspace_id = ? ORDER BY id DESC LIMIT ?",
+            (workspace_id, limit),
+        )
+        rows = await cursor.fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            d["config_json"] = _safe_json(d.get("config_json", "{}"))
+            d["results_json"] = _safe_json(d.get("results_json", "{}"))
+            results.append(d)
+        return results
 
 
 # ── AI Analysis ───────────────────────────────────────────────────

@@ -7,14 +7,34 @@ window.SiteMap = (() => {
     let treeEl, crawlBtn, stopBtn, statusEl;
     let pollTimer = null;
 
+    // ── Crawl History ──────────────────────
+    let crawlRequests = [];
+    let crawlRunning = false;
+    let historyPanel, historyList, historyToggle, historyBadge;
+
     function init() {
         treeEl    = document.getElementById('site-tree');
         crawlBtn  = document.getElementById('btn-start-crawl');
         stopBtn   = document.getElementById('btn-stop-crawl');
         statusEl  = document.getElementById('crawl-status');
 
+        historyPanel  = document.getElementById('crawl-history-panel');
+        historyList   = document.getElementById('crawl-request-list');
+        historyToggle = document.getElementById('btn-toggle-crawl-history');
+        historyBadge  = document.getElementById('crawl-history-badge');
+
         crawlBtn.addEventListener('click', startCrawl);
         stopBtn.addEventListener('click', stopCrawl);
+
+        historyToggle.addEventListener('click', () => {
+            const visible = historyPanel.style.display !== 'none';
+            historyPanel.style.display = visible ? 'none' : 'flex';
+        });
+
+        document.getElementById('btn-clear-crawl-history').addEventListener('click', () => {
+            crawlRequests = [];
+            renderCrawlHistory();
+        });
     }
 
     /** Add a URL to the tree (called for every new request log) */
@@ -74,6 +94,101 @@ window.SiteMap = (() => {
             for (const u of urls) _insertUrl(u);
             renderTree();
         } catch (_) {}
+    }
+
+    // ── Crawl Request History ──────────────────────
+
+    function addCrawlRequest(entry) {
+        if (!crawlRunning) return;
+        crawlRequests.unshift(entry);
+        if (crawlRequests.length > 2000) crawlRequests.length = 2000;
+        renderCrawlHistory();
+    }
+
+    function renderCrawlHistory() {
+        historyBadge.textContent = crawlRequests.length;
+
+        historyList.innerHTML = crawlRequests.map(e => {
+            const statusClass = e.status_code === 0 ? 'status-0'
+                : e.status_code < 300 ? 'status-2xx'
+                : e.status_code < 400 ? 'status-3xx'
+                : e.status_code < 500 ? 'status-4xx' : 'status-5xx';
+
+            return `<div class="log-entry" data-crawl-id="${e.id}">
+                <span class="log-method method-${e.method}">${e.method}</span>
+                <span class="log-status ${statusClass}">${e.status_code || '\u2014'}</span>
+                <span class="log-url" title="${_esc(e.url)}">${_esc(e.path || e.url)}</span>
+                <span class="log-time">${_fmtTime(e.timestamp)}${e.duration_ms ? ' \u00b7 ' + e.duration_ms.toFixed(0) + 'ms' : ''}</span>
+            </div>`;
+        }).join('');
+
+        historyList.querySelectorAll('.log-entry').forEach(el => {
+            el.addEventListener('click', () => {
+                const entry = crawlRequests.find(r => r.id === Number(el.dataset.crawlId));
+                if (entry) _showCrawlDetail(entry);
+            });
+            el.addEventListener('contextmenu', (ev) => {
+                ev.preventDefault();
+                const entry = crawlRequests.find(r => r.id === Number(el.dataset.crawlId));
+                if (!entry) return;
+                SendTo.showContextMenu(ev.clientX, ev.clientY, {
+                    method: entry.method,
+                    url: entry.url,
+                    headers: entry.request_headers || {},
+                    body: entry.request_body || '',
+                    request_headers: entry.request_headers || {},
+                    request_body: entry.request_body || '',
+                }, 'sitemap');
+            });
+        });
+    }
+
+    function _showCrawlDetail(entry) {
+        const detailPanel   = document.getElementById('detail-panel');
+        const detailContent = document.getElementById('detail-content');
+        const detailTitle   = document.getElementById('detail-title');
+
+        detailPanel.classList.remove('collapsed');
+        detailTitle.textContent = `${entry.method} ${entry.url}`;
+
+        const fmtHdrs = (hdrs) => {
+            if (!hdrs || typeof hdrs !== 'object') return '(none)';
+            return Object.entries(hdrs)
+                .map(([k, v]) => `<span class="hdr-key">${_esc(k)}</span>: <span class="hdr-val">${_esc(v)}</span>`)
+                .join('\n');
+        };
+
+        detailContent.innerHTML =
+`<div class="detail-section">
+<div class="detail-section-title">Request Headers</div>
+${fmtHdrs(entry.request_headers)}
+</div>
+<div class="detail-section">
+<div class="detail-section-title">Request Body</div>
+${EPTUtils.bodyPreBlock(entry.request_body || '')}
+</div>
+<div class="detail-section">
+<div class="detail-section-title">Response Headers</div>
+${fmtHdrs(entry.response_headers)}
+</div>
+<div class="detail-section">
+<div class="detail-section-title">Response Body</div>
+${EPTUtils.bodyPreBlock((entry.response_body || '').substring(0, 5000))}
+</div>`;
+    }
+
+    function _esc(s) {
+        const d = document.createElement('div');
+        d.textContent = s || '';
+        return d.innerHTML;
+    }
+
+    function _fmtTime(ts) {
+        if (!ts) return '';
+        try {
+            const d = new Date(ts);
+            return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        } catch (_) { return ''; }
     }
 
     function renderTree() {
@@ -187,6 +302,13 @@ window.SiteMap = (() => {
         stopBtn.disabled = false;
         statusEl.textContent = 'Starting...';
 
+        // Clear and show crawl history
+        crawlRequests = [];
+        renderCrawlHistory();
+        historyToggle.style.display = '';
+        historyPanel.style.display = 'flex';
+        crawlRunning = true;
+
         try {
             await fetch(`${API}/crawl?url=${encodeURIComponent(targetUrl)}&max_depth=5&max_pages=100`, {
                 method: 'POST',
@@ -196,6 +318,7 @@ window.SiteMap = (() => {
             statusEl.textContent = 'Error: ' + e.message;
             crawlBtn.disabled = false;
             stopBtn.disabled = true;
+            crawlRunning = false;
         }
     }
 
@@ -217,6 +340,7 @@ window.SiteMap = (() => {
                     pollTimer = null;
                     crawlBtn.disabled = false;
                     stopBtn.disabled = true;
+                    crawlRunning = false;
                     await loadCrawlResults();
                 }
             } catch (_) {}
@@ -432,5 +556,5 @@ window.SiteMap = (() => {
         renderTree();
     }
 
-    return { init, addUrl, addUrls, loadSaved, clear };
+    return { init, addUrl, addUrls, addCrawlRequest, loadSaved, clear };
 })();

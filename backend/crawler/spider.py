@@ -43,8 +43,14 @@ class Spider:
         start_url: str,
         max_depth: int = CRAWL_DEFAULT_DEPTH,
         max_pages: int = CRAWL_DEFAULT_MAX_PAGES,
+        extra_headers: dict | None = None,
     ) -> None:
-        """Kick off a crawl from *start_url*."""
+        """Kick off a crawl from *start_url*.
+
+        *extra_headers* — optional dict of HTTP headers (e.g. Authorization,
+        Cookie) to send with every page request so the crawler can reach
+        authenticated areas of the target site.
+        """
         self.max_depth = max_depth
         self.max_pages = max_pages
         self.visited.clear()
@@ -62,7 +68,10 @@ class Spider:
                 headless=True,
                 proxy={"server": f"http://{self.proxy_host}:{self.proxy_port}"},
             )
-            ctx = await browser.new_context(ignore_https_errors=True)
+            ctx = await browser.new_context(
+                ignore_https_errors=True,
+                extra_http_headers=extra_headers or {},
+            )
             try:
                 await self._crawl_page(ctx, start_url, domain, 0)
             except Exception as e:

@@ -6,6 +6,9 @@
  *
  * Multipart/form-data requests get a specialised per-part editor
  * with preset attack templates for file-upload security testing.
+ *
+ * Token overlays: textareas get transparent overlays that tokenize
+ * values for right-click AI injection suggestions.
  */
 window.Intercept = (() => {
     const API = 'http://127.0.0.1:8000/api';
@@ -23,6 +26,10 @@ window.Intercept = (() => {
     let multipartSection, multipartPartsEl, presetSelect;
     let jsonUploadSection, jsonUploadFilesEl, jsonUploadPresetSelect, jsonUploadRawEl;
     let historyCountEl, interceptPane;
+
+    // Token overlay state
+    const _overlays = {};         // fieldId → { el, overlay, wrapper, fieldType }
+    let _activeToken = null;      // { fieldId, start, end, value, name }
 
     function init() {
         toggleBtn    = document.getElementById('btn-intercept-toggle');
@@ -71,6 +78,7 @@ window.Intercept = (() => {
 
         _populatePresetDropdown();
         _initHistoryResize();
+        _initAiSuggest();
         fetchStatus();
     }
 
@@ -727,6 +735,128 @@ window.Intercept = (() => {
             btn.textContent = 'Copied!';
             setTimeout(() => { btn.textContent = orig; }, 1500);
         });
+    }
+
+    // ── AI Suggest integration ──────────────────────────────────
+
+    /** The textarea/input that last triggered the AI suggest popup. */
+    let _suggestTarget = null;
+
+    function _initAiSuggest() {
+        if (typeof AiSuggest === 'undefined') return;
+
+        // Right-click on editable fields opens AI suggestions for the word under cursor
+        const editableEls = [headersEl, bodyEl, urlEl];
+        editableEls.forEach(el => {
+            if (!el) return;
+            el.addEventListener('contextmenu', _onFieldContextMenu);
+        });
+
+        // When user picks a suggestion, replace the highlighted text
+        document.addEventListener('ai-triage-select', (e) => {
+            if (!_suggestTarget) return;
+            const payload = (e.detail && e.detail.payload) || '';
+            if (!payload) return;
+            _replaceSelection(_suggestTarget, payload);
+            _suggestTarget = null;
+        });
+    }
+
+    function _onFieldContextMenu(e) {
+        const el = e.target;
+        if (el.disabled || el.readOnly) return;
+
+        // Get the word under cursor (selected text or word at caret)
+        let text = '';
+        let selStart, selEnd;
+
+        if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
+            selStart = el.selectionStart;
+            selEnd = el.selectionEnd;
+
+            if (selStart !== selEnd) {
+                // User has a manual selection
+                text = el.value.substring(selStart, selEnd);
+            } else {
+                // No selection — find the word/token under cursor
+                const val = el.value;
+                const pos = selStart;
+                const wordChars = /[^\s"',;:{}[\]=&?#]/;
+                let left = pos;
+                while (left > 0 && wordChars.test(val[left - 1])) left--;
+                let right = pos;
+                while (right < val.length && wordChars.test(val[right])) right++;
+                text = val.substring(left, right);
+                if (text) {
+                    el.selectionStart = left;
+                    el.selectionEnd = right;
+                    selStart = left;
+                    selEnd = right;
+                }
+            }
+        }
+
+        text = text.trim();
+        if (!text) return;
+
+        e.preventDefault();
+        _suggestTarget = el;
+
+        // Build context for the AI
+        const context = {
+            field_type: _suggestFieldType(el),
+            field_name: _suggestFieldName(el, text),
+            method: methodEl ? methodEl.value : 'GET',
+            url: urlEl ? urlEl.value : '',
+            full_body: bodyEl ? bodyEl.value : '',
+            full_headers: _parseHeadersQuiet(headersEl ? headersEl.value : '{}'),
+        };
+
+        // Use mouse position as anchor rect for the popup
+        const rect = {
+            top: e.clientY,
+            bottom: e.clientY + 2,
+            left: e.clientX,
+            right: e.clientX + 2,
+        };
+
+        AiSuggest.showForSelection(text, context, rect);
+    }
+
+    function _suggestFieldType(el) {
+        if (el === urlEl) return 'url';
+        if (el === headersEl) return 'header';
+        if (el === bodyEl) return 'body';
+        return 'param';
+    }
+
+    function _suggestFieldName(el, text) {
+        if (el === urlEl) return 'url_path';
+        if (el === headersEl || el === bodyEl) {
+            const val = el.value;
+            const idx = val.indexOf(text);
+            if (idx > 0) {
+                const before = val.substring(Math.max(0, idx - 100), idx);
+                const keyMatch = before.match(/"([^"]+)"\s*:\s*"?$/);
+                if (keyMatch) return keyMatch[1];
+            }
+        }
+        return 'unknown';
+    }
+
+    function _parseHeadersQuiet(str) {
+        try { return JSON.parse(str); } catch (_) { return {}; }
+    }
+
+    function _replaceSelection(el, replacement) {
+        if (!el) return;
+        const start = el.selectionStart;
+        const end = el.selectionEnd;
+        if (start === end) return;
+        const val = el.value;
+        el.value = val.substring(0, start) + replacement + val.substring(end);
+        el.selectionStart = el.selectionEnd = start + replacement.length;
+        el.focus();
     }
 
     return { init, onInterceptedFlow };
