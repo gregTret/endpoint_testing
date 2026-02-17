@@ -7,8 +7,11 @@ import json
 import logging
 from datetime import datetime, timezone
 
+import csv
+import io
+
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from storage.db import (
     get_request_logs,
@@ -19,8 +22,20 @@ from storage.db import (
     delete_ai_analysis_by_id,
 )
 
+from api.ai_cache import (
+    get_cached_suggestion, set_cached_suggestion,
+    get_triage_state, partition_endpoints, update_triage_state,
+    set_preview_cache, consume_preview_cache, PreviewCache,
+    clear_workspace_cache, get_cache_stats,
+)
+
 log = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _safe_ascii(s: str) -> str:
+    """Encode string to ASCII-safe form, replacing non-ASCII chars to avoid cp1252 crashes."""
+    return s.encode("ascii", errors="replace").decode("ascii")
 
 # ── In-memory status for the currently running analysis ──────────
 _ai_status: dict = {
@@ -29,6 +44,20 @@ _ai_status: dict = {
     "phase": "",       # "collecting" | "analyzing" | "done"
     "endpoint_count": 0,
 }
+
+# ── Auth context from a logged request (set via /ai/analyze-request) ──
+_auth_context: dict | None = None  # { method, url, headers, body }
+
+
+def set_auth_context(ctx: dict | None):
+    """Store auth context (headers, cookies, tokens) from a logged request."""
+    global _auth_context
+    _auth_context = ctx
+
+
+def get_auth_context() -> dict | None:
+    """Return the current auth context, if any."""
+    return _auth_context
 
 # Import active workspace accessor from the main routes module
 def _get_workspace():
@@ -61,11 +90,38 @@ def _slim_headers(raw) -> dict:
     return {k: v for k, v in raw.items() if k.lower() in _SECURITY_HEADERS}
 
 
-def _prepare_traffic_payload(logs: list, host_filter: str = "") -> list[dict]:
+def _prepare_traffic_payload(logs: list, host_filter: str = "",
+                             auth_context: dict | None = None) -> list[dict]:
     """Deduplicate logs by method+path. Lean output — no response bodies,
-    request bodies only for mutating methods, security headers only."""
+    request bodies only for mutating methods, security headers only.
+
+    If *auth_context* is provided, the authenticated request is prepended
+    as the first endpoint (marked with ``"authenticated": true``) so the
+    AI knows which tokens are valid.
+    """
     seen = set()
     endpoints = []
+
+    # Prepend the authenticated request so Claude sees the valid tokens first
+    if auth_context:
+        auth_ep = {
+            "method": auth_context.get("method", "GET"),
+            "path": auth_context.get("url", ""),
+            "host": "",
+            "authenticated": True,
+            "req_headers": auth_context.get("headers", {}),
+        }
+        body = (auth_context.get("body") or "")[:500]
+        if body:
+            auth_ep["request_body"] = body
+        # Try to extract host from url
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(auth_context.get("url", ""))
+            auth_ep["host"] = parsed.netloc or ""
+        except Exception:
+            pass
+        endpoints.append(auth_ep)
 
     for entry in logs:
         if host_filter:
@@ -145,9 +201,27 @@ def _prepare_scan_payload(scan_rows: list[dict]) -> tuple[list[dict], list[dict]
     return confirmed, coverage
 
 
+def _build_auth_section(auth_context: dict | None) -> str:
+    """Build an optional auth context section for the prompt."""
+    if not auth_context:
+        return ""
+    auth_json = json.dumps({
+        "method": auth_context.get("method", "GET"),
+        "url": auth_context.get("url", ""),
+        "headers": auth_context.get("headers", {}),
+        "body": (auth_context.get("body") or "")[:500],
+    }, indent=None, default=str)
+    return f"""
+
+=== AUTHENTICATED REQUEST CONTEXT ===
+The following request was captured from a logged-in session. Its headers contain valid authentication tokens (Bearer, Cookie, API key, etc.). Use these tokens to understand the application's auth mechanism and consider auth-related vulnerabilities (token reuse, privilege escalation, missing auth on other endpoints, etc.).
+{auth_json}"""
+
+
 def _build_full_prompt(endpoints: list[dict],
                        confirmed_vulns: list[dict] | None = None,
-                       scan_coverage: list[dict] | None = None) -> str:
+                       scan_coverage: list[dict] | None = None,
+                       auth_context: dict | None = None) -> str:
     """Build the complete prompt.  Keeps data compact:
     - Common response headers extracted once (not per-endpoint)
     - Per-endpoint only has unique/notable headers
@@ -190,6 +264,9 @@ def _build_full_prompt(endpoints: list[dict],
     traffic_json = json.dumps(slim_endpoints, indent=None, default=str)
     common_hdr_json = json.dumps(common_resp, indent=None, default=str)
 
+    # ── Auth section ──
+    auth_section = _build_auth_section(auth_context)
+
     # ── Scan sections ──
     vuln_section = ""
     if confirmed_vulns:
@@ -222,9 +299,410 @@ Sort by risk (critical first).
 
 === COMMON RESPONSE HEADERS (apply to most endpoints) ===
 {common_hdr_json}
-
+{auth_section}
 === ENDPOINTS ===
 {traffic_json}{vuln_section}{coverage_section}"""
+
+
+def _build_targeted_prompt(endpoints: list[dict],
+                            confirmed_vulns: list[dict] | None = None,
+                            scan_coverage: list[dict] | None = None,
+                            auth_context: dict | None = None) -> str:
+    """Build a prompt for Phase 4 of auto-scan: asks Claude to produce both
+    findings AND a prioritized list of targeted HTTP requests to re-test.
+
+    Returns the same analysis as _build_full_prompt plus a ``targeted_requests``
+    array (top 20 most at-risk endpoints with suggested payloads).
+    """
+    confirmed_vulns = confirmed_vulns or []
+    scan_coverage = scan_coverage or []
+
+    # Reuse the same header-extraction logic from _build_full_prompt
+    if endpoints:
+        header_counts: dict[str, dict[str, int]] = {}
+        for ep in endpoints:
+            for k, v in (ep.get("resp_headers") or {}).items():
+                header_counts.setdefault(k, {})
+                vstr = str(v)
+                header_counts[k][vstr] = header_counts[k].get(vstr, 0) + 1
+
+        threshold = len(endpoints) * 0.5
+        common_resp = {}
+        for hdr, vals in header_counts.items():
+            for val, cnt in vals.items():
+                if cnt >= threshold:
+                    common_resp[hdr] = val
+
+        slim_endpoints = []
+        for ep in endpoints:
+            e = dict(ep)
+            rh = e.pop("resp_headers", {})
+            unique_rh = {k: v for k, v in rh.items()
+                         if str(v) != common_resp.get(k)}
+            if unique_rh:
+                e["resp_headers"] = unique_rh
+            slim_endpoints.append(e)
+    else:
+        common_resp = {}
+        slim_endpoints = []
+
+    traffic_json = json.dumps(slim_endpoints, indent=None, default=str)
+    common_hdr_json = json.dumps(common_resp, indent=None, default=str)
+
+    vuln_section = ""
+    if confirmed_vulns:
+        vuln_json = json.dumps(confirmed_vulns, indent=None, default=str)
+        vuln_section = f"""
+
+=== CONFIRMED VULNERABILITIES ({len(confirmed_vulns)}) ===
+These are CONFIRMED by the scanner (error-based, time-based, or OOB callback).
+{vuln_json}"""
+
+    coverage_section = ""
+    if scan_coverage:
+        cov_json = json.dumps(scan_coverage, indent=None, default=str)
+        coverage_section = f"""
+
+=== SCAN COVERAGE (not vulnerable) ===
+Injection types tested per endpoint (no vulns found for these):
+{cov_json}"""
+
+    total_scans = len(confirmed_vulns) + sum(c.get("payloads_tested", 1) for c in scan_coverage)
+
+    # ── Auth section ──
+    auth_section = _build_auth_section(auth_context)
+
+    return f"""You are a security analyst reviewing web application traffic and scan results.
+Analyze the data below and produce TWO outputs in a single JSON response.
+
+=== DATA SUMMARY ===
+- {len(slim_endpoints)} HTTP endpoints (passive traffic capture)
+- {total_scans} injection payloads tested ({len(confirmed_vulns)} confirmed vulnerable)
+
+=== TASK 1: Security Findings ===
+Analyze the traffic and scan data for vulnerabilities, misconfigurations, and risks.
+
+=== TASK 2: Targeted Re-test Requests ===
+Based on ALL the evidence (traffic patterns, headers, response codes, confirmed vulns, scan gaps), identify the TOP 20 most at-risk endpoints that deserve deeper targeted testing. For each, suggest specific payloads to test.
+
+Consider these risk signals:
+- Endpoints that accept user input (POST/PUT/PATCH with body params)
+- Endpoints missing auth headers or CSRF tokens
+- Endpoints returning verbose errors or stack traces
+- Endpoints near confirmed vulnerabilities (same host/path prefix)
+- Endpoints not yet covered by scans
+- Endpoints with dynamic parameters in query strings or paths
+- Endpoints returning sensitive data (PII, tokens, internal IDs)
+
+Respond ONLY with JSON (no markdown, no backticks):
+{{
+  "summary": "...",
+  "findings": [
+    {{
+      "endpoint": "URL",
+      "method": "GET/POST",
+      "path": "/...",
+      "risk": "critical/high/medium/low/info",
+      "category": "Injection/Auth/...",
+      "title": "...",
+      "description": "...",
+      "evidence": "...",
+      "recommendation": "..."
+    }}
+  ],
+  "targeted_requests": [
+    {{
+      "priority": 1,
+      "method": "POST",
+      "url": "https://example.com/api/users",
+      "path": "/api/users",
+      "risk_reason": "Why this endpoint is high risk based on the evidence seen",
+      "suggested_payloads": [
+        {{
+          "injection_point": "body|query|header|path",
+          "key": "parameter_name",
+          "payload": "the actual payload string",
+          "type": "sql|xss|ssti|auth|idor|path_traversal|command|ssrf"
+        }}
+      ]
+    }}
+  ]
+}}
+
+Rules for targeted_requests:
+- Maximum 20 entries, sorted by priority (1 = highest risk)
+- Each MUST have a risk_reason explaining WHY it's high risk based on observed evidence
+- suggested_payloads should be specific and realistic (not generic)
+- Include the full URL so the orchestrator can make the request directly
+- Cover a variety of vulnerability types, not just SQL injection
+- If an endpoint was already confirmed vulnerable, suggest DIFFERENT payloads to test for OTHER vuln types
+
+Sort findings by risk (critical first).
+
+=== COMMON RESPONSE HEADERS (apply to most endpoints) ===
+{common_hdr_json}
+{auth_section}
+=== ENDPOINTS ===
+{traffic_json}{vuln_section}{coverage_section}"""
+
+
+def _build_retest_analysis_prompt(targeted_results: list[dict]) -> str:
+    """Build a prompt for Phase 5 of auto-scan: asks Claude to analyze the
+    responses from targeted re-test requests and produce final findings.
+
+    ``targeted_results`` is a list of dicts, each containing:
+      - method, url, path: the request that was made
+      - risk_reason: why it was selected for re-testing
+      - payload: the payload that was sent
+      - injection_point, key, payload_type: payload details
+      - status_code: HTTP response status
+      - response_headers: dict of response headers
+      - response_body: truncated response body
+      - response_time_ms: how long the response took
+      - error: any error that occurred during the request (optional)
+    """
+    results_json = json.dumps(targeted_results, indent=None, default=str)
+
+    return f"""You are a security analyst reviewing the results of targeted re-test requests against a web application.
+
+Each entry below is a request that was made because it was flagged as high-risk during an earlier analysis phase. Your job is to analyze EACH response for signs of actual vulnerability.
+
+=== {len(targeted_results)} TARGETED RE-TEST RESULTS ===
+{results_json}
+
+=== ANALYSIS INSTRUCTIONS ===
+For each result, check for:
+1. **Injection indicators**: Error messages revealing DB/framework info, reflected payloads in response body, unexpected data returned
+2. **Auth/access issues**: Accessing resources without proper auth, IDOR responses returning other users' data, privilege escalation indicators
+3. **Timing anomalies**: Unusually slow responses that may indicate blind injection success (compare to baseline)
+4. **Status code anomalies**: 500s (unhandled errors from payloads), 200s where 401/403 expected, 302 redirects to unexpected locations
+5. **Response body differences**: Responses that differ significantly from expected behavior, verbose error messages, stack traces, internal paths
+6. **Header anomalies**: Missing security headers, unexpected CORS headers, information disclosure via server headers
+
+Compare patterns across results: if the same endpoint returns different status codes or body lengths for different payloads, that's a strong signal.
+
+Respond ONLY with JSON (no markdown, no backticks):
+{{
+  "summary": "Overall assessment of the re-test results",
+  "findings": [
+    {{
+      "endpoint": "URL",
+      "method": "GET/POST",
+      "path": "/...",
+      "risk": "critical/high/medium/low/info",
+      "status": "confirmed/suspected/informational",
+      "category": "Injection/Auth/...",
+      "title": "...",
+      "description": "Detailed description of what was found",
+      "evidence": "Specific evidence from the response (status code, body snippet, timing, etc.)",
+      "payload_used": "The payload that triggered this finding",
+      "recommendation": "..."
+    }}
+  ]
+}}
+
+Rules:
+- Only include findings where there is ACTUAL evidence of a vulnerability or anomaly
+- Mark as "confirmed" only if the evidence is clear (e.g., reflected XSS, SQL error message, auth bypass)
+- Mark as "suspected" if the behavior is anomalous but not conclusive
+- Mark as "informational" for interesting observations that need manual verification
+- Sort by risk (critical first), then by status (confirmed first)
+- Do NOT include entries where the application handled the payload correctly (returned expected error, blocked the request, etc.)"""
+
+
+def _build_triage_prompt(endpoints: list[dict],
+                          confirmed_vulns: list[dict] | None = None,
+                          scan_coverage: list[dict] | None = None,
+                          auth_context: dict | None = None) -> str:
+    """Build a triage-mode prompt: analyze existing proxy traffic, identify
+    file upload points and weak endpoints, rank by attack priority, and
+    suggest specific injection payloads — without requiring a full crawl.
+    """
+    confirmed_vulns = confirmed_vulns or []
+    scan_coverage = scan_coverage or []
+
+    # Reuse the same header-extraction logic
+    if endpoints:
+        header_counts: dict[str, dict[str, int]] = {}
+        for ep in endpoints:
+            for k, v in (ep.get("resp_headers") or {}).items():
+                header_counts.setdefault(k, {})
+                vstr = str(v)
+                header_counts[k][vstr] = header_counts[k].get(vstr, 0) + 1
+
+        threshold = len(endpoints) * 0.5
+        common_resp = {}
+        for hdr, vals in header_counts.items():
+            for val, cnt in vals.items():
+                if cnt >= threshold:
+                    common_resp[hdr] = val
+
+        slim_endpoints = []
+        for ep in endpoints:
+            e = dict(ep)
+            rh = e.pop("resp_headers", {})
+            unique_rh = {k: v for k, v in rh.items()
+                         if str(v) != common_resp.get(k)}
+            if unique_rh:
+                e["resp_headers"] = unique_rh
+            slim_endpoints.append(e)
+    else:
+        common_resp = {}
+        slim_endpoints = []
+
+    traffic_json = json.dumps(slim_endpoints, indent=None, default=str)
+    common_hdr_json = json.dumps(common_resp, indent=None, default=str)
+
+    auth_section = _build_auth_section(auth_context)
+
+    vuln_section = ""
+    if confirmed_vulns:
+        vuln_json = json.dumps(confirmed_vulns, indent=None, default=str)
+        vuln_section = f"""
+
+=== CONFIRMED VULNERABILITIES ({len(confirmed_vulns)}) ===
+These are CONFIRMED by the scanner (error-based, time-based, or OOB callback).
+{vuln_json}"""
+
+    coverage_section = ""
+    if scan_coverage:
+        cov_json = json.dumps(scan_coverage, indent=None, default=str)
+        coverage_section = f"""
+
+=== SCAN COVERAGE (not vulnerable) ===
+Injection types tested per endpoint (no vulns found for these):
+{cov_json}"""
+
+    total_scans = len(confirmed_vulns) + sum(c.get("payloads_tested", 1) for c in scan_coverage)
+
+    return f"""You are a security triage analyst. The user has been browsing a web application through an intercepting proxy. Analyze the captured traffic below and perform a QUICK TRIAGE — identify the weakest endpoints and file upload points so the user can attack those first, without a full crawl.
+
+=== DATA SUMMARY ===
+- {len(slim_endpoints)} HTTP endpoints (from proxy traffic captured during browsing)
+- {total_scans} injection payloads already tested ({len(confirmed_vulns)} confirmed vulnerable)
+
+=== TASK 1: Identify File Upload Endpoints ===
+Look for endpoints that accept file uploads:
+- multipart/form-data content-types in request headers
+- Paths containing: upload, file, attach, import, media, image, document, avatar, photo
+- Request bodies with file-like form fields (filename, file, attachment, etc.)
+- Endpoints returning upload-related responses
+
+=== TASK 2: Rank ALL Endpoints by Attack Priority ===
+Rank every endpoint from weakest/most-vulnerable to strongest. Consider:
+- Endpoints accepting user input (POST/PUT/PATCH with params or body)
+- Endpoints missing security headers (CSRF, auth)
+- Endpoints near confirmed vulns (same path prefix)
+- Endpoints NOT yet tested by the scanner
+- Endpoints with verbose error responses or stack traces
+- Endpoints returning sensitive data (tokens, PII, internal IDs)
+- Dynamic parameters in query strings or paths
+- Endpoints with permissive CORS or missing auth
+
+=== TASK 3: Suggest Specific Payloads ===
+For each prioritized endpoint, suggest the EXACT payloads to try, including which parameter to inject into and what type of injection.
+
+Respond ONLY with JSON (no markdown, no backticks):
+{{
+  "summary": "Brief triage assessment of the application's attack surface",
+  "upload_endpoints": [
+    {{
+      "url": "https://example.com/api/upload",
+      "method": "POST",
+      "reason": "Why this is identified as a file upload endpoint",
+      "suggested_tests": ["Test 1: upload .php shell", "Test 2: path traversal filename", ...]
+    }}
+  ],
+  "priority_targets": [
+    {{
+      "priority": 1,
+      "url": "https://example.com/api/users",
+      "method": "POST",
+      "risk_reason": "Why this endpoint is high priority for attack — specific evidence from the traffic",
+      "suggested_payloads": [
+        {{
+          "injection_point": "body|query|header|path",
+          "key": "parameter_name",
+          "payload": "the actual payload string",
+          "type": "sql|xss|ssti|cmd|ssrf|idor|path_traversal|auth_bypass"
+        }}
+      ]
+    }}
+  ]
+}}
+
+Rules:
+- upload_endpoints: list ALL endpoints that look like they handle file uploads, even if uncertain (mark confidence in reason)
+- priority_targets: maximum 20, sorted by priority (1 = weakest/most exploitable)
+- Each priority_target MUST have a risk_reason citing specific evidence from the captured traffic
+- suggested_payloads should be SPECIFIC and REALISTIC — not generic template payloads
+- Cover a variety of vulnerability types across the targets
+- If an endpoint was already confirmed vulnerable, suggest payloads for OTHER vuln types
+- Focus on endpoints the scanner HASN'T tested yet — those are the blind spots
+
+=== COMMON RESPONSE HEADERS (apply to most endpoints) ===
+{common_hdr_json}
+{auth_section}
+=== ENDPOINTS ===
+{traffic_json}{vuln_section}{coverage_section}"""
+
+
+def _build_incremental_triage_prompt(new_endpoints: list[dict],
+                                     prior_summary: str,
+                                     prior_findings: list[dict],
+                                     prior_upload_endpoints: list[dict],
+                                     prior_priority_targets: list[dict],
+                                     already_analyzed_count: int,
+                                     confirmed_vulns: list[dict] | None = None,
+                                     scan_coverage: list[dict] | None = None,
+                                     auth_context: dict | None = None) -> str:
+    """Build an incremental triage prompt that only sends NEW endpoints to
+    Claude while providing condensed context from prior analysis runs.
+    """
+    confirmed_vulns = confirmed_vulns or []
+    scan_coverage = scan_coverage or []
+
+    # Build prior context section
+    prior_targets_summary = ""
+    if prior_priority_targets:
+        lines = []
+        for t in prior_priority_targets[:20]:
+            lines.append(f"  - {t.get('method', 'GET')} {t.get('url', '')} — {(t.get('risk_reason') or '')[:100]}")
+        prior_targets_summary = "\n".join(lines)
+
+    prior_uploads_summary = ""
+    if prior_upload_endpoints:
+        lines = []
+        for u in prior_upload_endpoints:
+            lines.append(f"  - {u.get('method', 'POST')} {u.get('url', '')} — {(u.get('reason') or '')[:80]}")
+        prior_uploads_summary = "\n".join(lines)
+
+    prior_section = f"""=== PRIOR ANALYSIS CONTEXT ===
+You previously analysed {already_analyzed_count} endpoints for this application.
+
+Prior summary: {prior_summary}
+"""
+    if prior_uploads_summary:
+        prior_section += f"\nPreviously identified upload endpoints:\n{prior_uploads_summary}\n"
+    if prior_targets_summary:
+        prior_section += f"\nPreviously prioritised targets:\n{prior_targets_summary}\n"
+
+    prior_section += f"""
+The {len(new_endpoints)} endpoints below are NEW traffic captured since the last analysis.
+Analyse them in context of the prior findings above. Update priorities if needed —
+a new endpoint may be higher risk than previously ranked ones.
+Do NOT repeat findings that were already identified unless a new endpoint changes
+the risk assessment.
+
+"""
+
+    # Build the standard triage prompt for the new endpoints only
+    standard_prompt = _build_triage_prompt(
+        new_endpoints, confirmed_vulns, scan_coverage, auth_context
+    )
+
+    # Prepend prior context
+    return prior_section + standard_prompt
 
 
 _MODEL_MAP = {
@@ -349,7 +827,8 @@ def _find_claude_cli() -> str | None:
 
 async def _run_claude(endpoints: list[dict], model: str,
                       confirmed_vulns: list[dict] | None = None,
-                      scan_coverage: list[dict] | None = None) -> dict:
+                      scan_coverage: list[dict] | None = None,
+                      auth_context: dict | None = None) -> dict:
     """Spawn claude CLI, piping the full prompt via stdin.
 
     The prompt (instruction + compact data) is piped through stdin using
@@ -390,7 +869,7 @@ async def _run_claude(endpoints: list[dict], model: str,
             }, f, indent=2, default=str)
 
         # Build compact prompt — piped via stdin (no cmd-line length limit)
-        full_prompt = _build_full_prompt(endpoints, confirmed_vulns, scan_coverage)
+        full_prompt = _build_full_prompt(endpoints, confirmed_vulns, scan_coverage, auth_context)
         prompt_bytes = full_prompt.encode("utf-8")
         prompt_size_kb = len(prompt_bytes) / 1024
         _debug(f"Prompt size: {prompt_size_kb:.1f} KB, model: {model_arg}")
@@ -426,7 +905,7 @@ async def _run_claude(endpoints: list[dict], model: str,
                 proc.communicate(input=prompt_bytes), timeout=600
             )
         except asyncio.TimeoutError:
-            _debug("TIMEOUT after 10 minutes — killing process")
+            _debug("TIMEOUT after 10 minutes -- killing process")
             proc.kill()
             await proc.wait()
             return {"error": "Claude analysis timed out after 10 minutes. Try a smaller dataset or faster model."}
@@ -441,21 +920,108 @@ async def _run_claude(endpoints: list[dict], model: str,
         _debug(f"Stdout (first 500): {raw_out[:500]}")
 
         if rc != 0:
-            log.error("claude subprocess failed (rc=%d): %s", rc, raw_err[:500])
+            log.error("claude subprocess failed (rc=%d): %s", rc, _safe_ascii(raw_err[:500]))
             return {"error": f"Claude process exited with code {rc}: {raw_err[:500]}"}
 
         if not raw_out:
             return {"error": "Claude returned empty output"}
 
-        log.info("Claude raw output (first 500 chars): %s", raw_out[:500])
+        log.info("Claude raw output (first 500 chars): %s", _safe_ascii(raw_out[:500]))
         return _parse_claude_output(raw_out)
 
     except FileNotFoundError:
-        _debug("FileNotFoundError — claude CLI not on PATH")
+        _debug("FileNotFoundError -- claude CLI not on PATH")
         return {"error": "Claude CLI not found. Make sure 'claude' is installed and in your PATH."}
     except Exception as e:
         _debug(f"Exception: {e}")
         log.error("claude subprocess error: %s", e, exc_info=True)
+        return {"error": str(e)}
+
+
+async def run_claude_with_prompt(prompt: str, model: str = "opus") -> dict:
+    """Run an arbitrary prompt through the Claude CLI and return parsed JSON.
+
+    This is the public entry point for the auto-scan orchestrator. It handles
+    CLI invocation, timeout, and output parsing — callers just supply the prompt
+    string (built via _build_targeted_prompt or _build_retest_analysis_prompt).
+    """
+    import sys
+    import os
+    from pathlib import Path
+
+    model_arg = _MODEL_MAP.get(model, "opus")
+    storage_dir = Path(__file__).resolve().parent.parent / "storage"
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    debug_log_path = str(storage_dir / "ai_debug.log")
+
+    def _debug(msg: str):
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            with open(debug_log_path, "a", encoding="utf-8") as f:
+                f.write(f"[{ts}] {msg}\n")
+        except OSError:
+            pass
+
+    try:
+        claude_cmd = _find_claude_cli()
+        if not claude_cmd:
+            return {"error": "Claude CLI not found. Make sure 'claude' is installed and in your PATH."}
+
+        prompt_bytes = prompt.encode("utf-8")
+        prompt_size_kb = len(prompt_bytes) / 1024
+        _debug(f"[run_claude_with_prompt] Prompt size: {prompt_size_kb:.1f} KB, model: {model_arg}")
+
+        args = [
+            claude_cmd,
+            "--model", model_arg,
+            "--output-format", "json",
+            "-p",
+        ]
+
+        if sys.platform == "win32" and claude_cmd.lower().endswith(".cmd"):
+            proc = await asyncio.create_subprocess_exec(
+                "cmd", "/c", *args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        else:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(input=prompt_bytes), timeout=600
+            )
+        except asyncio.TimeoutError:
+            _debug("[run_claude_with_prompt] TIMEOUT after 10 minutes")
+            proc.kill()
+            await proc.wait()
+            return {"error": "Claude analysis timed out after 10 minutes."}
+
+        rc = proc.returncode
+        raw_out = stdout.decode("utf-8", errors="replace").strip()
+        raw_err = stderr.decode("utf-8", errors="replace").strip()
+
+        _debug(f"[run_claude_with_prompt] Exit code: {rc}, stdout: {len(raw_out)} chars")
+
+        if rc != 0:
+            log.error("claude subprocess failed (rc=%d): %s", rc, _safe_ascii(raw_err[:500]))
+            return {"error": f"Claude process exited with code {rc}: {raw_err[:500]}"}
+
+        if not raw_out:
+            return {"error": "Claude returned empty output"}
+
+        return _parse_claude_output(raw_out)
+
+    except FileNotFoundError:
+        return {"error": "Claude CLI not found. Make sure 'claude' is installed and in your PATH."}
+    except Exception as e:
+        log.error("run_claude_with_prompt error: %s", e, exc_info=True)
         return {"error": str(e)}
 
 
@@ -507,7 +1073,7 @@ def _parse_claude_output(raw: str) -> dict:
             # Handle the wrapper format: {"result": "..."}
             if "result" in outer:
                 inner_raw = str(outer["result"]).strip()
-                log.info("Parsed outer wrapper, inner result (first 300 chars): %s", inner_raw[:300])
+                log.info("Parsed outer wrapper, inner result (first 300 chars): %s", _safe_ascii(inner_raw[:300]))
 
                 # Inner might be direct JSON
                 try:
@@ -560,7 +1126,263 @@ def _parse_claude_output(raw: str) -> dict:
 
 
 
+# ── Injection Suggestion Fallbacks ────────────────────────────────
+
+_FALLBACK_SUGGESTIONS = {
+    "param": [
+        {"payload": "' OR '1'='1", "type": "sqli", "description": "Classic SQL injection tautology"},
+        {"payload": "1 UNION SELECT null,null,null--", "type": "sqli", "description": "UNION-based column enumeration"},
+        {"payload": "<script>alert(1)</script>", "type": "xss", "description": "Reflected XSS probe"},
+        {"payload": "{{7*7}}", "type": "ssti", "description": "Server-side template injection probe"},
+        {"payload": "; ls -la", "type": "cmd", "description": "Unix command injection via semicolon"},
+        {"payload": "../../../etc/passwd", "type": "traversal", "description": "Path traversal to /etc/passwd"},
+    ],
+    "header": [
+        {"payload": "127.0.0.1\r\nX-Injected: true", "type": "header_injection", "description": "CRLF header injection"},
+        {"payload": "() { :; }; /bin/cat /etc/passwd", "type": "cmd", "description": "Shellshock via header value"},
+        {"payload": "{{7*7}}", "type": "ssti", "description": "SSTI probe in header value"},
+        {"payload": "' OR '1'='1", "type": "sqli", "description": "SQL injection in header-derived value"},
+        {"payload": "<script>alert(document.domain)</script>", "type": "xss", "description": "XSS via header reflection"},
+        {"payload": "file:///etc/passwd", "type": "ssrf", "description": "SSRF via file protocol in header"},
+    ],
+    "body": [
+        {"payload": "' OR 1=1--", "type": "sqli", "description": "SQL injection in body parameter"},
+        {"payload": "{\"$gt\": \"\"}", "type": "nosql", "description": "MongoDB NoSQL operator injection"},
+        {"payload": "<img src=x onerror=alert(1)>", "type": "xss", "description": "XSS via image error handler"},
+        {"payload": "{{config.__class__.__init__.__globals__}}", "type": "ssti", "description": "Jinja2 SSTI config leak"},
+        {"payload": "| cat /etc/passwd", "type": "cmd", "description": "Piped command injection"},
+        {"payload": "<!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]>", "type": "xxe", "description": "XXE entity injection"},
+    ],
+    "path": [
+        {"payload": "..%2f..%2f..%2fetc%2fpasswd", "type": "traversal", "description": "URL-encoded path traversal"},
+        {"payload": "....//....//etc/passwd", "type": "traversal", "description": "Double-dot filter bypass"},
+        {"payload": "%00.php", "type": "null_byte", "description": "Null byte extension bypass"},
+        {"payload": "admin'--", "type": "sqli", "description": "SQL injection in URL path segment"},
+        {"payload": "{{7*7}}", "type": "ssti", "description": "SSTI probe in path"},
+        {"payload": ";id", "type": "cmd", "description": "Command injection in path segment"},
+    ],
+}
+
+
+async def _run_haiku_suggestions(text: str, context: dict) -> dict:
+    """Spawn Claude CLI with haiku model for fast injection suggestions.
+
+    Returns {"suggestions": [...]} on success or {"error": "..."} on failure.
+    Uses a 30-second timeout for speed.
+    """
+    import sys
+
+    field_type = context.get("field_type", "param")
+    field_name = context.get("field_name", "unknown")
+    method = context.get("method", "GET")
+    url = context.get("url", "")
+    full_body = (context.get("full_body") or "")[:500]
+    full_headers = context.get("full_headers") or {}
+    is_json_value = context.get("is_json_value", False)
+
+    # Build compact context snippet
+    context_snippet = f"Method: {method}, URL: {url}"
+    if full_body:
+        context_snippet += f", Body preview: {full_body[:200]}"
+    if full_headers:
+        header_keys = list(full_headers.keys())[:10]
+        context_snippet += f", Headers present: {', '.join(header_keys)}"
+
+    # JSON-safety constraint when the highlighted text sits inside a JSON string value
+    json_constraint = ""
+    if is_json_value:
+        json_constraint = (
+            "\n\nIMPORTANT: The highlighted text is inside a JSON string value "
+            '(i.e. between double quotes in a JSON body). '
+            "Each payload will be substituted into a JSON string, so:\n"
+            "- Prefer payloads that work AS plain string values: SQL injection strings, "
+            "XSS tags, command injection separators, SSTI template expressions, "
+            "path traversal sequences.\n"
+            "- Do NOT return raw JSON objects/arrays as payloads — they would just "
+            "become escaped string literals, not actual operator injection.\n"
+            "- If you need a double-quote inside the payload, escape it as \\\".\n"
+            "- The tool will handle JSON-escaping the payload before insertion, "
+            "so write payloads as plain text (not pre-escaped)."
+        )
+
+    prompt = (
+        "You are a penetration testing assistant. Given this HTTP request context, "
+        "suggest 6-8 injection payloads to test for the highlighted value.\n\n"
+        f"Highlighted text: '{text}'\n"
+        f"Field type: {field_type}\n"
+        f"Field name: {field_name}\n"
+        f"Request: {method} {url}\n"
+        f"Context: {context_snippet}\n"
+        f"{json_constraint}\n\n"
+        "Return ONLY a JSON array of objects with keys: "
+        "\"payload\" (the injection string), "
+        "\"type\" (e.g. sqli, xss, cmd, ssti, nosql, traversal, ssrf, xxe, idor), "
+        "\"description\" (1-line explanation).\n"
+        "Be specific to the context — consider the field name, position, and request method. "
+        "Include a variety of attack types relevant to this specific parameter. "
+        "Return ONLY the JSON array, no other text."
+    )
+
+    try:
+        claude_cmd = _find_claude_cli()
+        if not claude_cmd:
+            return {"error": "Claude CLI not found"}
+
+        prompt_bytes = _safe_ascii(prompt).encode("utf-8")
+
+        args = [
+            claude_cmd,
+            "--model", _MODEL_MAP.get("haiku", "haiku"),
+            "--output-format", "json",
+            "-p",
+        ]
+
+        if sys.platform == "win32" and claude_cmd.lower().endswith(".cmd"):
+            proc = await asyncio.create_subprocess_exec(
+                "cmd", "/c", *args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        else:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(input=prompt_bytes), timeout=30
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return {"error": "Suggestion request timed out (30s)"}
+
+        rc = proc.returncode
+        raw_out = stdout.decode("utf-8", errors="replace").strip()
+
+        if rc != 0 or not raw_out:
+            return {"error": f"Claude CLI failed (rc={rc})"}
+
+        # Parse output — may be wrapped in {"result": "..."} from --output-format json
+        suggestions = _parse_suggestions_output(raw_out)
+        if suggestions is not None:
+            return {"suggestions": suggestions}
+
+        return {"error": "Could not parse suggestions from Claude output"}
+
+    except FileNotFoundError:
+        return {"error": "Claude CLI not found"}
+    except Exception as e:
+        log.error("haiku suggestions error: %s", e, exc_info=True)
+        return {"error": str(e)}
+
+
+def _parse_suggestions_output(raw: str) -> list | None:
+    """Parse Claude output into a list of suggestion dicts.
+
+    Handles: --output-format json wrapper, direct JSON arrays, code fences,
+    and embedded arrays in text.
+    """
+    import re
+
+    def _try_parse_array(text: str) -> list | None:
+        text = text.strip()
+        # Try direct parse
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+        # Strip code fences
+        stripped = _strip_code_fences(text)
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, list):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+        # Find first [ ... ] via bracket matching
+        start = text.find("[")
+        if start >= 0:
+            depth = 0
+            for i in range(start, len(text)):
+                if text[i] == "[":
+                    depth += 1
+                elif text[i] == "]":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(text[start:i + 1])
+                        except json.JSONDecodeError:
+                            break
+        return None
+
+    # Step 1: Try as --output-format json wrapper
+    try:
+        outer = json.loads(raw)
+        if isinstance(outer, dict) and "result" in outer:
+            inner = str(outer["result"]).strip()
+            result = _try_parse_array(inner)
+            if result is not None:
+                return result
+        if isinstance(outer, list):
+            return outer
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # Step 2: Try raw text
+    return _try_parse_array(raw)
+
+
 # ── Endpoints ────────────────────────────────────────────────────
+
+@router.post("/ai/suggest-injections")
+async def ai_suggest_injections(data: dict = None):
+    """Fast AI-powered injection suggestions for highlighted text in the interceptor."""
+    data = data or {}
+    text = (data.get("text") or "").strip()[:500]
+    context = data.get("context") or {}
+
+    if not text:
+        return JSONResponse(status_code=400, content={"error": "text is required"})
+
+    field_type = context.get("field_type", "param")
+    field_name = context.get("field_name", "unknown")
+    method = context.get("method", "GET")
+    url = context.get("url", "")
+    is_json_value = bool(context.get("is_json_value", False))
+    workspace_id = _get_workspace()
+
+    # Check suggest cache first
+    log.info("Suggest request: ws=%s text=%.30s field=%s/%s method=%s url=%.60s json=%s",
+             workspace_id, text, field_type, field_name, method, url, is_json_value)
+    cached = get_cached_suggestion(workspace_id, text, field_type, field_name, method, url,
+                                   is_json_value=is_json_value)
+    if cached is not None:
+        log.info("CACHE HIT — returning %d cached suggestions instantly", len(cached))
+        return {"suggestions": cached, "cached": True}
+
+    log.info("CACHE MISS — calling Claude haiku...")
+    # Try Claude CLI (haiku) first
+    result = await _run_haiku_suggestions(text, context)
+
+    if "suggestions" in result:
+        # Cache successful Claude responses (not fallbacks)
+        set_cached_suggestion(workspace_id, text, field_type, field_name, method, url,
+                              result["suggestions"], is_json_value=is_json_value)
+        log.info("Cached %d suggestions for future use", len(result["suggestions"]))
+        return result
+
+    # Fallback to hardcoded suggestions
+    log.warning("AI suggestions failed (%s), using fallback for field_type=%s",
+                result.get("error", "unknown"), field_type)
+    fallback = _FALLBACK_SUGGESTIONS.get(field_type, _FALLBACK_SUGGESTIONS["param"])
+    return {"suggestions": fallback, "fallback": True}
 
 
 @router.post("/ai/preview")
@@ -584,8 +1406,21 @@ async def ai_preview(data: dict = None):
     # Get unique hosts for the host filter dropdown
     hosts = sorted({e.get("host", "") for e in logs if e.get("host")})
 
+    # Store in preview cache so /ai/triage can reuse without re-fetching
+    set_preview_cache(workspace_id, PreviewCache(
+        endpoints=endpoints,
+        confirmed_vulns=confirmed_vulns,
+        scan_coverage=scan_coverage,
+        host_filter=host_filter,
+    ))
+
+    # Report how many are new vs cached from prior triage runs
+    new_eps, cached_count = partition_endpoints(workspace_id, endpoints, host_filter)
+
     return {
         "endpoint_count": len(endpoints),
+        "new_endpoint_count": len(new_eps),
+        "cached_endpoint_count": cached_count,
         "total_logs": len(logs),
         "scan_result_count": len(raw_scans),
         "confirmed_vulns": len(confirmed_vulns),
@@ -676,6 +1511,115 @@ async def ai_analyze(data: dict = None):
     return {"status": "started", "model": model, "host_filter": host_filter}
 
 
+@router.post("/ai/analyze-request")
+async def ai_analyze_request(data: dict = None):
+    """Start AI analysis using a logged request's auth context.
+
+    Accepts { method, url, headers, body, model?, host_filter? }.
+    Stores the auth headers so the analysis (and auto-scan) can use them,
+    then triggers the same analysis flow as /ai/analyze.
+    """
+    global _ai_status, _auth_context
+    data = data or {}
+
+    if _ai_status["running"]:
+        return JSONResponse(status_code=409, content={"error": "Analysis already in progress"})
+
+    url = (data.get("url") or "").strip()
+    if not url:
+        return JSONResponse(status_code=400, content={"error": "url is required"})
+
+    # Build and store auth context
+    auth_ctx = {
+        "method": data.get("method", "GET"),
+        "url": url,
+        "headers": data.get("headers") or {},
+        "body": data.get("body") or "",
+    }
+    set_auth_context(auth_ctx)
+
+    # Also push auth headers to auto_scan module
+    try:
+        from api.auto_scan import set_auth_context as auto_scan_set_auth
+        auto_scan_set_auth(auth_ctx["headers"])
+    except Exception:
+        pass
+
+    model = data.get("model", "sonnet")
+    host_filter = (data.get("host_filter") or "").strip()
+    workspace_id = _get_workspace()
+
+    # If no host_filter provided, derive from the request URL
+    if not host_filter:
+        try:
+            from urllib.parse import urlparse
+            host_filter = urlparse(url).netloc or ""
+        except Exception:
+            pass
+
+    _ai_status = {
+        "running": True,
+        "error": None,
+        "phase": "collecting",
+        "endpoint_count": 0,
+    }
+
+    async def run_analysis():
+        global _ai_status
+        try:
+            logs = await get_request_logs(session_id=workspace_id, limit=2000)
+            endpoints = _prepare_traffic_payload(logs, host_filter, auth_context=auth_ctx)
+            _ai_status["endpoint_count"] = len(endpoints)
+
+            raw_scans = await get_scan_results_by_workspace(workspace_id, limit=1000)
+            confirmed_vulns, scan_coverage = _prepare_scan_payload(raw_scans)
+
+            if not endpoints and not confirmed_vulns and not scan_coverage:
+                _ai_status["running"] = False
+                _ai_status["error"] = "No traffic or scan data found. Browse some sites or run scans first."
+                _ai_status["phase"] = "done"
+                return
+
+            _ai_status["phase"] = "analyzing"
+            result = await _run_claude(endpoints, model,
+                                       confirmed_vulns=confirmed_vulns,
+                                       scan_coverage=scan_coverage,
+                                       auth_context=auth_ctx)
+
+            if "error" in result and "findings" not in result:
+                _ai_status["running"] = False
+                _ai_status["error"] = result["error"]
+                _ai_status["phase"] = "done"
+                return
+
+            findings = result.get("findings", [])
+            summary = result.get("summary", "")
+            raw_response = json.dumps(result, indent=2, default=str)
+
+            await save_ai_analysis(
+                workspace_id=workspace_id,
+                model=model,
+                host_filter=host_filter,
+                endpoint_count=len(endpoints),
+                findings=findings,
+                summary=summary,
+                raw_response=raw_response,
+            )
+
+            _ai_status["running"] = False
+            _ai_status["phase"] = "done"
+            log.info("AI analysis (with auth context) complete: %d findings", len(findings))
+
+        except Exception as e:
+            log.error("AI analysis (auth) failed: %s", e, exc_info=True)
+            _ai_status["running"] = False
+            _ai_status["error"] = str(e)
+            _ai_status["phase"] = "done"
+
+    asyncio.create_task(run_analysis())
+    return {"status": "started", "model": model, "host_filter": host_filter, "auth_context": True}
+
+
 @router.get("/ai/status")
 async def ai_status():
     """Poll analysis progress."""
@@ -689,11 +1633,151 @@ async def ai_results(limit: int = 20):
     return await get_ai_analysis_results(workspace_id, limit)
 
 
+@router.get("/ai/export")
+async def ai_export_json():
+    """Export AI analysis results as a downloadable JSON file."""
+    workspace_id = _get_workspace()
+    results = await get_ai_analysis_results(workspace_id, limit=100)
+    # Parse findings JSON strings into actual objects
+    for r in results:
+        if isinstance(r.get("findings"), str):
+            try:
+                r["findings"] = json.loads(r["findings"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+    content = json.dumps(results, indent=2, default=str)
+    return Response(
+        content=content,
+        media_type="application/json",
+        headers={"Content-Disposition": "attachment; filename=ai_analysis_export.json"},
+    )
+
+
+@router.get("/ai/export/markdown")
+async def ai_export_markdown():
+    """Export AI analysis results as a downloadable Markdown report."""
+    workspace_id = _get_workspace()
+    results = await get_ai_analysis_results(workspace_id, limit=100)
+
+    risk_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+    md = "# AI Security Analysis Report\n\n"
+
+    for r in results:
+        findings = r.get("findings") or []
+        if isinstance(findings, str):
+            try:
+                findings = json.loads(findings)
+            except (json.JSONDecodeError, TypeError):
+                findings = []
+
+        model_label = (r.get("model") or "opus").capitalize()
+        host_label = r.get("host_filter") or "All traffic"
+        created = r.get("created_at") or ""
+
+        risk_counts: dict[str, int] = {}
+        for f in findings:
+            risk = (f.get("risk") or "info").lower()
+            risk_counts[risk] = risk_counts.get(risk, 0) + 1
+        risk_line = " | ".join(
+            f"{count} {risk.upper()}"
+            for risk, count in sorted(risk_counts.items(), key=lambda x: risk_order.get(x[0], 9))
+        )
+
+        md += f"## Analysis — {host_label}\n\n"
+        md += f"- **Model:** Claude {model_label}\n"
+        md += f"- **Date:** {created}\n"
+        md += f"- **Endpoints analyzed:** {r.get('endpoint_count', 0)}\n"
+        md += f"- **Host filter:** {host_label}\n"
+        md += f"- **Findings:** {risk_line or 'None'}\n\n"
+
+        summary = r.get("summary") or ""
+        if summary:
+            md += f"### Summary\n\n{summary}\n\n"
+
+        if findings:
+            md += "### Findings\n\n"
+            sorted_findings = sorted(
+                findings,
+                key=lambda f: risk_order.get((f.get("risk") or "info").lower(), 9),
+            )
+            for i, f in enumerate(sorted_findings, 1):
+                risk = (f.get("risk") or "INFO").upper()
+                md += f"#### {i}. [{risk}] {f.get('title', 'Untitled')}\n\n"
+                if f.get("method") or f.get("path") or f.get("endpoint"):
+                    md += f"**Endpoint:** `{f.get('method', '')} {f.get('path') or f.get('endpoint', '')}`\n\n"
+                if f.get("category"):
+                    md += f"**Category:** {f['category']}\n\n"
+                if f.get("description"):
+                    md += f"**Description:** {f['description']}\n\n"
+                if f.get("evidence"):
+                    md += f"**Evidence:** {f['evidence']}\n\n"
+                if f.get("recommendation"):
+                    md += f"**Recommendation:** {f['recommendation']}\n\n"
+                md += "---\n\n"
+
+        md += "\n"
+
+    md += "*Generated by Endpoint Security Tool — AI Analysis*\n"
+
+    return Response(
+        content=md,
+        media_type="text/markdown",
+        headers={"Content-Disposition": "attachment; filename=ai_analysis_export.md"},
+    )
+
+
+@router.get("/ai/export/csv")
+async def ai_export_csv():
+    """Export AI analysis findings as a downloadable CSV file."""
+    workspace_id = _get_workspace()
+    results = await get_ai_analysis_results(workspace_id, limit=100)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "analysis_date", "model", "host_filter", "risk", "category",
+        "title", "method", "path", "endpoint", "description",
+        "evidence", "recommendation",
+    ])
+
+    for r in results:
+        findings = r.get("findings") or []
+        if isinstance(findings, str):
+            try:
+                findings = json.loads(findings)
+            except (json.JSONDecodeError, TypeError):
+                findings = []
+        for f in findings:
+            writer.writerow([
+                r.get("created_at", ""),
+                r.get("model", ""),
+                r.get("host_filter", ""),
+                f.get("risk", ""),
+                f.get("category", ""),
+                f.get("title", ""),
+                f.get("method", ""),
+                f.get("path", ""),
+                f.get("endpoint", ""),
+                f.get("description", ""),
+                f.get("evidence", ""),
+                f.get("recommendation", ""),
+            ])
+
+    content = output.getvalue()
+    return Response(
+        content=content,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=ai_analysis_export.csv"},
+    )
+
+
 @router.delete("/ai/results")
 async def ai_clear_results():
     """Clear AI results for the active workspace."""
     workspace_id = _get_workspace()
     await delete_ai_analysis_results(workspace_id)
+    clear_workspace_cache(workspace_id)
     return {"ok": True}
 
 
@@ -702,3 +1786,369 @@ async def ai_delete_result(result_id: int):
     """Delete a single AI analysis result by ID."""
     await delete_ai_analysis_by_id(result_id)
     return {"ok": True}
+
+
+@router.post("/ai/cache/clear")
+async def ai_cache_clear():
+    """Clear all AI caches for the active workspace."""
+    workspace_id = _get_workspace()
+    clear_workspace_cache(workspace_id)
+    return {"ok": True}
+
+
+@router.get("/ai/cache/stats")
+async def ai_cache_stats():
+    """Return AI cache statistics for the active workspace."""
+    workspace_id = _get_workspace()
+    return get_cache_stats(workspace_id)
+
+
+# ── Triage Endpoints ────────────────────────────────────────────────
+
+
+@router.post("/ai/triage")
+async def ai_triage(data: dict = None):
+    """Quick AI Triage: analyze existing proxy traffic to identify upload
+    points and weak endpoints, rank by attack priority, and suggest
+    specific payloads — without requiring a full crawl first.
+    """
+    global _ai_status
+    data = data or {}
+
+    if _ai_status["running"]:
+        return JSONResponse(status_code=409, content={"error": "Analysis already in progress"})
+
+    model = data.get("model", "sonnet")
+    host_filter = (data.get("host_filter") or "").strip()
+    auth_context = data.get("auth_context") or _auth_context
+    force_full = bool(data.get("force_full", False))
+    workspace_id = _get_workspace()
+
+    # If force_full requested, clear the triage cache first
+    if force_full:
+        clear_workspace_cache(workspace_id)
+
+    _ai_status = {
+        "running": True,
+        "error": None,
+        "phase": "collecting",
+        "endpoint_count": 0,
+    }
+
+    async def run_triage():
+        global _ai_status
+        try:
+            # Try preview cache first to avoid re-fetching from DB
+            preview = consume_preview_cache(workspace_id, host_filter)
+            if preview:
+                endpoints = preview.endpoints
+                confirmed_vulns = preview.confirmed_vulns
+                scan_coverage = preview.scan_coverage
+                log.info("Using preview cache: %d endpoints", len(endpoints))
+            else:
+                # Collect traffic fresh
+                logs = await get_request_logs(session_id=workspace_id, limit=2000)
+                endpoints = _prepare_traffic_payload(logs, host_filter, auth_context=auth_context)
+                raw_scans = await get_scan_results_by_workspace(workspace_id, limit=1000)
+                confirmed_vulns, scan_coverage = _prepare_scan_payload(raw_scans)
+
+            _ai_status["endpoint_count"] = len(endpoints)
+
+            if not endpoints:
+                _ai_status["running"] = False
+                _ai_status["error"] = "No traffic found. Browse some sites first so the proxy captures endpoints."
+                _ai_status["phase"] = "done"
+                return
+
+            # Partition into new vs already-analysed endpoints
+            new_eps, cached_count = partition_endpoints(workspace_id, endpoints, host_filter)
+            triage_state = get_triage_state(workspace_id)
+
+            if not new_eps and not force_full:
+                # All endpoints already analysed — nothing new to send
+                _ai_status["running"] = False
+                _ai_status["phase"] = "done"
+                _ai_status["error"] = (
+                    f"All {cached_count} endpoints were already analysed. "
+                    "Browse more pages to capture new traffic, or clear the AI cache to force a full re-analysis."
+                )
+                return
+
+            # Build prompt — incremental if we have prior context, full otherwise
+            _ai_status["phase"] = "analyzing"
+            if triage_state.prior_summary and not force_full:
+                log.info("Building incremental triage prompt: %d new endpoints (%d cached)",
+                         len(new_eps), cached_count)
+                prompt = _build_incremental_triage_prompt(
+                    new_eps,
+                    prior_summary=triage_state.prior_summary,
+                    prior_findings=triage_state.prior_findings,
+                    prior_upload_endpoints=triage_state.prior_upload_endpoints,
+                    prior_priority_targets=triage_state.prior_priority_targets,
+                    already_analyzed_count=cached_count,
+                    confirmed_vulns=confirmed_vulns,
+                    scan_coverage=scan_coverage,
+                    auth_context=auth_context,
+                )
+                endpoints_for_prompt = new_eps
+            else:
+                log.info("Building full triage prompt: %d endpoints", len(endpoints))
+                prompt = _build_triage_prompt(endpoints, confirmed_vulns, scan_coverage, auth_context)
+                endpoints_for_prompt = endpoints
+
+            result = await run_claude_with_prompt(prompt, model=model)
+
+            if "error" in result and "priority_targets" not in result:
+                _ai_status["running"] = False
+                _ai_status["error"] = result["error"]
+                _ai_status["phase"] = "done"
+                return
+
+            # Normalize the response
+            summary = result.get("summary", "")
+            upload_endpoints = result.get("upload_endpoints", [])
+            priority_targets = result.get("priority_targets", [])
+            findings = result.get("findings", [])
+
+            # Merge with prior results if incremental
+            if triage_state.prior_summary and not force_full:
+                # Merge upload endpoints (dedupe by URL)
+                seen_urls = {u.get("url") for u in upload_endpoints}
+                for u in triage_state.prior_upload_endpoints:
+                    if u.get("url") not in seen_urls:
+                        upload_endpoints.append(u)
+
+                # Merge priority targets — new ones go first, then prior
+                seen_target_urls = {t.get("url") for t in priority_targets}
+                for t in triage_state.prior_priority_targets:
+                    if t.get("url") not in seen_target_urls:
+                        priority_targets.append(t)
+
+                # Re-number priorities
+                for i, t in enumerate(priority_targets):
+                    t["priority"] = i + 1
+
+                # Merge findings
+                seen_finding_titles = {f.get("title") for f in findings}
+                for f in triage_state.prior_findings:
+                    if f.get("title") not in seen_finding_titles:
+                        findings.append(f)
+
+            # Update result with merged data
+            result["upload_endpoints"] = upload_endpoints
+            result["priority_targets"] = priority_targets
+            result["findings"] = findings
+
+            raw_response = json.dumps(result, indent=2, default=str)
+
+            # Save to DB with "triage:" prefix on model to distinguish
+            await save_ai_analysis(
+                workspace_id=workspace_id,
+                model=f"triage:{model}",
+                host_filter=host_filter,
+                endpoint_count=len(endpoints),
+                findings=findings or priority_targets,
+                summary=summary,
+                raw_response=raw_response,
+            )
+
+            # Update triage state cache
+            new_keys = [f"{ep.get('method', 'GET')} {ep.get('path', '')}"
+                        for ep in endpoints_for_prompt]
+            update_triage_state(
+                workspace_id, new_keys,
+                summary=summary,
+                findings=findings,
+                upload_endpoints=upload_endpoints,
+                priority_targets=priority_targets,
+                host_filter=host_filter,
+                confirmed_vuln_count=len(confirmed_vulns),
+                scan_coverage_count=len(scan_coverage),
+            )
+
+            _ai_status["running"] = False
+            _ai_status["phase"] = "done"
+            log.info("AI triage complete: %d upload endpoints, %d priority targets (incremental=%s)",
+                     len(upload_endpoints), len(priority_targets),
+                     bool(triage_state.prior_summary and not force_full))
+
+        except Exception as e:
+            log.error("AI triage failed: %s", e, exc_info=True)
+            _ai_status["running"] = False
+            _ai_status["error"] = str(e)
+            _ai_status["phase"] = "done"
+
+    asyncio.create_task(run_triage())
+    return {"status": "started", "model": model, "host_filter": host_filter}
+
+
+@router.get("/ai/triage/status")
+async def ai_triage_status():
+    """Poll triage progress (reuses the shared _ai_status dict)."""
+    return _ai_status
+
+
+@router.post("/ai/triage/execute")
+async def ai_triage_execute(data: dict = None):
+    """Execute suggested payloads from the triage against target endpoints.
+
+    Accepts {targets: [{method, url, payloads: [{injection_point, key, payload, type}]}], model?}
+    Sends each payload, then passes results through Claude for analysis.
+    """
+    import time
+    import httpx
+    from urllib.parse import urlparse
+    from config import SCAN_DEFAULT_TIMEOUT, SCAN_RESPONSE_CAP, PROXY_HOST, PROXY_PORT, DEFAULT_HEADERS
+
+    global _ai_status
+    data = data or {}
+
+    if _ai_status["running"]:
+        return JSONResponse(status_code=409, content={"error": "Analysis already in progress"})
+
+    targets = data.get("targets", [])
+    if not targets:
+        return JSONResponse(status_code=400, content={"error": "targets is required"})
+
+    ai_model = data.get("model", "sonnet")
+
+    _ai_status = {
+        "running": True,
+        "error": None,
+        "phase": "executing",
+        "endpoint_count": sum(max(1, len(t.get("payloads", []))) for t in targets),
+    }
+
+    async def run_execute():
+        global _ai_status
+        try:
+            # Build default headers
+            try:
+                from api.routes import get_default_headers
+                headers = await get_default_headers()
+            except Exception:
+                headers = dict(DEFAULT_HEADERS)
+            headers["x-ept-scan"] = "1"
+
+            proxy_url = f"http://{PROXY_HOST}:{PROXY_PORT}"
+            targeted_results = []
+
+            async with httpx.AsyncClient(
+                verify=False, timeout=SCAN_DEFAULT_TIMEOUT, proxy=proxy_url
+            ) as client:
+                for target in targets:
+                    method = target.get("method", "GET").upper()
+                    url = target.get("url", "")
+                    payloads = target.get("payloads", [])
+
+                    if not payloads:
+                        payloads = [{"injection_point": "none", "key": "", "payload": "", "type": "recon"}]
+
+                    for pl in payloads:
+                        payload_str = pl.get("payload", "")
+                        injection_point = pl.get("injection_point", "query")
+                        key = pl.get("key", "")
+
+                        req_params = {}
+                        req_body = ""
+                        req_headers = dict(headers)
+                        req_url = url
+
+                        if injection_point in ("query", "params") and key and payload_str:
+                            req_params[key] = payload_str
+                        elif injection_point == "body" and key and payload_str:
+                            try:
+                                req_body = json.dumps({key: payload_str})
+                                req_headers["Content-Type"] = "application/json"
+                            except Exception:
+                                req_body = f"{key}={payload_str}"
+                        elif injection_point == "header" and key and payload_str:
+                            req_headers[key] = payload_str
+                        elif injection_point == "path" and payload_str:
+                            req_url = url.rstrip("/") + "/" + payload_str
+
+                        start_time = time.time()
+                        error = None
+                        status_code = 0
+                        resp_headers = {}
+                        resp_body = ""
+
+                        try:
+                            if method == "GET":
+                                resp = await client.get(req_url, params=req_params, headers=req_headers)
+                            else:
+                                resp = await client.request(
+                                    method, req_url,
+                                    params=req_params,
+                                    headers=req_headers,
+                                    content=req_body.encode("utf-8") if req_body else b"",
+                                )
+                            elapsed = round((time.time() - start_time) * 1000, 2)
+                            status_code = resp.status_code
+                            resp_headers = dict(resp.headers)
+                            resp_body = resp.text[:SCAN_RESPONSE_CAP]
+                        except Exception as e:
+                            elapsed = round((time.time() - start_time) * 1000, 2)
+                            error = str(e)
+
+                        targeted_results.append({
+                            "method": method,
+                            "url": req_url,
+                            "path": urlparse(req_url).path,
+                            "risk_reason": target.get("risk_reason", ""),
+                            "payload": payload_str,
+                            "injection_point": injection_point,
+                            "key": key,
+                            "payload_type": pl.get("type", "unknown"),
+                            "status_code": status_code,
+                            "response_headers": resp_headers,
+                            "response_body": resp_body,
+                            "response_time_ms": elapsed,
+                            **({"error": error} if error else {}),
+                        })
+
+            if not targeted_results:
+                _ai_status["running"] = False
+                _ai_status["phase"] = "done"
+                _ai_status["error"] = "No requests were executed"
+                return
+
+            # Analyze results with Claude
+            _ai_status["phase"] = "analyzing"
+            prompt = _build_retest_analysis_prompt(targeted_results)
+            analysis = await run_claude_with_prompt(prompt, model=ai_model)
+
+            findings = analysis.get("findings", [])
+            summary = analysis.get("summary", "")
+
+            # Save to DB
+            workspace_id = _get_workspace()
+            raw_response = json.dumps({
+                "summary": summary,
+                "findings": findings,
+                "targeted_results": targeted_results,
+            }, indent=2, default=str)
+
+            await save_ai_analysis(
+                workspace_id=workspace_id,
+                model=f"triage-exec:{ai_model}",
+                host_filter="",
+                endpoint_count=len(targeted_results),
+                findings=findings,
+                summary=summary,
+                raw_response=raw_response,
+            )
+
+            _ai_status["running"] = False
+            _ai_status["phase"] = "done"
+            log.info("Triage execute complete: %d findings from %d requests",
+                     len(findings), len(targeted_results))
+
+        except Exception as e:
+            log.error("Triage execute failed: %s", e, exc_info=True)
+            _ai_status["running"] = False
+            _ai_status["error"] = str(e)
+            _ai_status["phase"] = "done"
+
+    asyncio.create_task(run_execute())
+    return {"status": "started", "targets": len(targets), "model": ai_model}

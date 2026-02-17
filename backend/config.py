@@ -48,5 +48,11 @@ OOB_DEFAULT_URL = "https://stay-positioning-mods-persistent.trycloudflare.com"
 OOB_POLL_INTERVAL = 2.0        # seconds between polls
 OOB_POLL_DURATION = 15.0       # total seconds to poll after injection
 
+# ── Auto Scan ─────────────────────────────────────────────────────
+AUTO_SCAN_DEFAULT_CONCURRENT = 5
+AUTO_SCAN_DEFAULT_DELAY = 0.5   # seconds between requests
+AUTO_SCAN_DEFAULT_DEPTH = 3
+AUTO_SCAN_DEFAULT_MAX_PAGES = 50
+
 # ── HTML parsing ───────────────────────────────────────────────────
 HTML_PARSER = "lxml"           # falls back to "html.parser" if lxml missing
