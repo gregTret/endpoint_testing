@@ -44,7 +44,7 @@ DEFAULT_HEADERS = {
 }
 
 # ── OOB Callback ─────────────────────────────────────────────────
-OOB_DEFAULT_URL = "https://stay-positioning-mods-persistent.trycloudflare.com"
+OOB_DEFAULT_URL = "https://deviation.cc"
 OOB_POLL_INTERVAL = 2.0        # seconds between polls
 OOB_POLL_DURATION = 15.0       # total seconds to poll after injection
 
