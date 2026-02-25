@@ -531,12 +531,33 @@ window.OobUI = (() => {
     }
 
     function _walkKeys(obj, prefix, out) {
+        const MAX_ARRAY_ELEMENTS = 20;
         for (const [k, v] of Object.entries(obj)) {
             const path = prefix ? `${prefix}.${k}` : k;
-            if (v && typeof v === 'object' && !Array.isArray(v)) {
+            if (Array.isArray(v)) {
+                out.push({ source: 'body', key: path });
+                _walkArrayOob(v, path, out, MAX_ARRAY_ELEMENTS);
+            } else if (v && typeof v === 'object') {
                 _walkKeys(v, path, out);
             } else {
                 out.push({ source: 'body', key: path });
+            }
+        }
+    }
+
+    function _walkArrayOob(arr, prefix, out, maxElements) {
+        const limit = Math.min(arr.length, maxElements);
+        for (let i = 0; i < limit; i++) {
+            const elemPath = `${prefix}[${i}]`;
+            const el = arr[i];
+            if (Array.isArray(el)) {
+                out.push({ source: 'body', key: elemPath });
+                _walkArrayOob(el, elemPath, out, maxElements);
+            } else if (el && typeof el === 'object') {
+                out.push({ source: 'body', key: elemPath });
+                _walkKeys(el, elemPath, out);
+            } else {
+                out.push({ source: 'body', key: elemPath });
             }
         }
     }

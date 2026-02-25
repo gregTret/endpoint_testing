@@ -116,11 +116,11 @@
                     </div>
                 </div>
                 <div class="form-group">
-                    <label>Headers <button class="btn-ai-suggest-body" id="btn-intercept-ai-headers" title="Send all headers to AI for injection suggestions">AI Suggest</button></label>
+                    <label>Headers <button class="btn-ai-suggest-body" id="btn-intercept-ai-headers" title="Browse injection payloads">Payloads</button></label>
                     <textarea id="intercept-headers" rows="6"></textarea>
                 </div>
                 <div class="form-group" id="intercept-body-group">
-                    <label>Body <button class="btn-ai-suggest-body" id="btn-intercept-ai-body" title="Send entire body to AI for injection suggestions">AI Suggest</button></label>
+                    <label>Body <button class="btn-ai-suggest-body" id="btn-intercept-ai-body" title="Browse injection payloads">Payloads</button></label>
                     <textarea id="intercept-body" rows="6"></textarea>
                 </div>
                 <!-- Multipart File Upload Editor (shown for multipart/form-data requests) -->
@@ -370,7 +370,7 @@
                         <textarea id="repeater-headers" rows="3" placeholder='{"Authorization": "Bearer ..."}'></textarea>
                     </div>
                     <div class="form-group">
-                        <label>Body <button class="btn-ai-suggest-body" id="btn-repeater-ai-body" title="Send entire body to AI for injection suggestions">AI Suggest</button></label>
+                        <label>Body <button class="btn-ai-suggest-body" id="btn-repeater-ai-body" title="Browse injection payloads">Payloads</button></label>
                         <textarea id="repeater-body" rows="4" placeholder="Request body..."></textarea>
                     </div>
                     <div id="repeater-response" class="scrollable"></div>
@@ -672,45 +672,81 @@
 
                 <div class="info-section">
                     <div class="info-section-title">OOB Callback Server</div>
-                    <p class="info-desc">Endpoints on the out-of-band callback server. Open these in a browser to inspect received callbacks.</p>
+                    <p class="info-desc">Endpoints on the out-of-band callback server. The dashboard and destructive endpoints require login (session cookie). Per-key retrieval endpoints are unauthenticated &mdash; the scan key acts as a bearer token.</p>
                     <table class="info-endpoint-table">
                         <thead>
-                            <tr><th>Method</th><th>Endpoint</th><th>Description</th></tr>
+                            <tr><th>Method</th><th>Endpoint</th><th>Auth</th><th>Description</th></tr>
                         </thead>
                         <tbody>
                             <tr>
                                 <td><span class="info-method method-GET">GET</span></td>
                                 <td><span class="info-url" data-oob-path="/api/health">/api/health</span></td>
+                                <td>&mdash;</td>
                                 <td>Server health check</td>
                             </tr>
                             <tr>
                                 <td><span class="info-method method-GET">GET</span></td>
+                                <td><span class="info-url" data-oob-path="/login">/login</span></td>
+                                <td>&mdash;</td>
+                                <td>Login page (also served at <code>/</code>)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="info-method method-POST">POST</span></td>
+                                <td>/login</td>
+                                <td>&mdash;</td>
+                                <td>Authenticate &mdash; sets session cookie</td>
+                            </tr>
+                            <tr>
+                                <td><span class="info-method method-GET">GET</span></td>
+                                <td><span class="info-url" data-oob-path="/logout">/logout</span></td>
+                                <td>&mdash;</td>
+                                <td>Clear session cookie and redirect to login</td>
+                            </tr>
+                            <tr>
+                                <td><span class="info-method method-GET">GET</span></td>
+                                <td><span class="info-url" data-oob-path="/api/live">/api/live</span></td>
+                                <td>Session</td>
+                                <td>Live callback dashboard (redirects to login if unauthenticated)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="info-method" style="background:var(--surface2);color:var(--text-dim)">WS</span></td>
+                                <td>/api/ws</td>
+                                <td>Session</td>
+                                <td>WebSocket feed for live dashboard updates</td>
+                            </tr>
+                            <tr>
+                                <td><span class="info-method method-GET">GET</span></td>
+                                <td><span class="info-url" data-oob-path="/api/callbacks">/api/callbacks</span></td>
+                                <td>Session</td>
+                                <td>List ALL callbacks (paginated, includes total count)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="info-method method-GET">GET</span></td>
                                 <td><span class="info-url" data-oob-path="/api/callbacks/{key}">/api/callbacks/{key}</span></td>
-                                <td>List all callbacks received for a scan key</td>
+                                <td>&mdash;</td>
+                                <td>List callbacks for a scan key (no auth &mdash; key is unguessable)</td>
                             </tr>
                             <tr>
                                 <td><span class="info-method method-GET">GET</span></td>
                                 <td><span class="info-url" data-oob-path="/api/callbacks/{key}/{token}">/api/callbacks/{key}/{token}</span></td>
+                                <td>&mdash;</td>
                                 <td>List callbacks for a specific payload token</td>
                             </tr>
                             <tr>
                                 <td><span class="info-method method-DELETE">DELETE</span></td>
                                 <td><span class="info-url" data-oob-path="/api/callbacks/{key}">/api/callbacks/{key}</span></td>
+                                <td>Session</td>
                                 <td>Clear all stored callbacks for a scan key</td>
                             </tr>
                             <tr>
                                 <td><span class="info-method" style="background:var(--surface2);color:var(--text-dim)">ANY</span></td>
                                 <td><span class="info-url" data-oob-path="/{key}/{token}">{base}/{key}/{token}</span></td>
+                                <td>&mdash;</td>
                                 <td>Catch-all callback receiver &mdash; payloads hit this</td>
-                            </tr>
-                            <tr>
-                                <td><span class="info-method method-GET">GET</span></td>
-                                <td><span class="info-url" data-oob-path="/api/live">/api/live</span></td>
-                                <td>Live callback dashboard (open in browser)</td>
                             </tr>
                         </tbody>
                     </table>
-                    <p class="info-hint">URLs use the OOB server configured in Settings. Click a URL to open it, or right-click to copy.</p>
+                    <p class="info-hint">URLs use the OOB server configured in Settings. Click a URL to open it, or right-click to copy. <strong>Session</strong> = requires login via <code>/login</code>.</p>
                 </div>
 
                 <div class="info-section">
