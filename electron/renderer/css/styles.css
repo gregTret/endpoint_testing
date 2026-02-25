@@ -3168,12 +3168,12 @@ html, body {
     color: #000;
 }
 
-/* ── AI Suggest Popup (Intercept injection suggestions) ──────────── */
+/* ── Payload Bank Popup (Intercept injection suggestions) ──────────── */
 .ai-suggest-popup {
     position: fixed;
     z-index: 10000;
-    width: 420px;
-    max-height: 400px;
+    width: 480px;
+    max-height: 520px;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 8px;
@@ -3302,61 +3302,76 @@ html, body {
     padding: 0;
 }
 
-.ai-suggest-info {
+/* ── Payload bank filter + tabs ──────────────────────────────────── */
+
+.ai-suggest-filter-row {
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border);
     flex-shrink: 0;
-    font-size: 14px;
+}
+
+.ai-suggest-filter {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 5px 8px;
+    font-size: 11px;
+    font-family: var(--mono);
+    color: var(--text);
+    outline: none;
+}
+.ai-suggest-filter:focus {
+    border-color: var(--accent);
+}
+.ai-suggest-filter::placeholder {
     color: var(--text-dim);
-    cursor: help;
-    opacity: .6;
-    transition: opacity .12s;
-}
-.ai-suggest-row:hover .ai-suggest-info { opacity: 1; }
-
-/* ── Intercept Token Overlay (hover highlight + right-click suggest) ── */
-
-.intercept-token-wrapper {
-    position: absolute;
-    pointer-events: none;
-    overflow: hidden;
-    z-index: 5;
 }
 
-.intercept-token-overlay {
-    position: relative;
-    color: transparent;
-    background: transparent;
-    border: none;
+.ai-suggest-type-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
 }
 
-.intercept-token {
-    position: relative;
-    border-radius: 2px;
-    transition: background .12s, box-shadow .12s;
-    pointer-events: auto;
-    cursor: context-menu;
+.ai-suggest-tab {
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: background .12s, border-color .12s;
+}
+.ai-suggest-tab:hover {
+    background: rgba(88, 166, 255, .06);
+    border-color: var(--border);
+}
+.ai-suggest-tab.active {
+    background: rgba(88, 166, 255, .12);
+    border-color: var(--accent);
+    color: var(--accent);
 }
 
-/* Subtle underline hint on all tokens so users know they're interactive */
-.intercept-token::after {
-    content: '';
-    position: absolute;
-    left: 0; right: 0; bottom: 0;
-    height: 1px;
-    background: var(--accent-dim);
-    opacity: 0.3;
-    transition: opacity .15s;
-}
-
-/* Hover glow — different color from cursor, unmistakable highlight */
-.intercept-token-hover {
-    background: rgba(88, 166, 255, .18);
-    box-shadow: 0 0 6px rgba(88, 166, 255, .25), inset 0 0 0 1px rgba(88, 166, 255, .35);
-    border-radius: 2px;
-}
-.intercept-token-hover::after {
-    opacity: 0.8;
-    height: 2px;
-    background: var(--accent);
+.ai-suggest-quick {
+    flex-shrink: 0;
+    font-size: 9px;
+    font-weight: 700;
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
+    background: rgba(251, 191, 36, .18);
+    color: #fbbf24;
 }
 
 /* Inject flash toast */

@@ -576,13 +576,34 @@ EPTUtils.bodyPreBlock(r.response_body || '') +
     }
 
     function walkKeys(obj, prefix, out) {
+        const MAX_ARRAY_ELEMENTS = 20;
         for (const [k, v] of Object.entries(obj)) {
             const path = prefix ? `${prefix}.${k}` : k;
-            if (v && typeof v === 'object' && !Array.isArray(v)) {
+            if (Array.isArray(v)) {
+                out.push({ source: 'body', key: path });
+                _walkArray(v, path, out, MAX_ARRAY_ELEMENTS);
+            } else if (v && typeof v === 'object') {
                 out.push({ source: 'body', key: path });
                 walkKeys(v, path, out);
             } else {
                 out.push({ source: 'body', key: path });
+            }
+        }
+    }
+
+    function _walkArray(arr, prefix, out, maxElements) {
+        const limit = Math.min(arr.length, maxElements);
+        for (let i = 0; i < limit; i++) {
+            const elemPath = `${prefix}[${i}]`;
+            const el = arr[i];
+            if (Array.isArray(el)) {
+                out.push({ source: 'body', key: elemPath });
+                _walkArray(el, elemPath, out, maxElements);
+            } else if (el && typeof el === 'object') {
+                out.push({ source: 'body', key: elemPath });
+                walkKeys(el, elemPath, out);
+            } else {
+                out.push({ source: 'body', key: elemPath });
             }
         }
     }

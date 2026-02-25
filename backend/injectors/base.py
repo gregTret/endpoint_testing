@@ -409,11 +409,33 @@ def _walk_keys(obj: dict, prefix: str, out: list[str]) -> None:
     """Recursively collect dot-notation paths for all values, including nested objects."""
     for k, v in obj.items():
         path = f"{prefix}{k}" if not prefix else f"{prefix}.{k}"
-        if isinstance(v, dict):
+        if isinstance(v, list):
+            out.append(path)
+            _walk_array(v, path, out)
+        elif isinstance(v, dict):
             out.append(path)
             _walk_keys(v, path, out)
         else:
             out.append(path)
+
+
+_MAX_ARRAY_ELEMENTS = 20
+
+
+def _walk_array(arr: list, prefix: str, out: list[str]) -> None:
+    """Recursively collect bracket-notation paths for array elements."""
+    limit = min(len(arr), _MAX_ARRAY_ELEMENTS)
+    for i in range(limit):
+        elem_path = f"{prefix}[{i}]"
+        el = arr[i]
+        if isinstance(el, list):
+            out.append(elem_path)
+            _walk_array(el, elem_path, out)
+        elif isinstance(el, dict):
+            out.append(elem_path)
+            _walk_keys(el, elem_path, out)
+        else:
+            out.append(elem_path)
 
 
 def _inject_into_body(body: str, target_key: str, payload: str) -> tuple[str, bool]:
@@ -444,14 +466,53 @@ def _inject_into_body(body: str, target_key: str, payload: str) -> tuple[str, bo
     return json.dumps(data), True
 
 
-def _set_nested(obj: dict, dotpath: str, value) -> None:
-    """Set a value in a nested dict using dot-notation path."""
+def _parse_part(part: str):
+    """Parse a path part that may contain bracket notation.
+
+    Returns a list of navigation steps.  For example:
+      "users"    -> ["users"]
+      "users[0]" -> ["users", 0]
+      "[0]"      -> [0]
+    """
+    steps = []
+    # Split on '[' to find key and any indices
+    segments = part.split("[")
+    if segments[0]:  # there's a key before any bracket
+        steps.append(segments[0])
+    for seg in segments[1:]:
+        # seg looks like "0]" or "0][1]" leftover
+        idx_str = seg.rstrip("]")
+        if idx_str.isdigit():
+            steps.append(int(idx_str))
+    return steps
+
+
+def _set_nested(obj, dotpath: str, value) -> None:
+    """Set a value in a nested dict/list using dot-notation + bracket paths."""
     parts = dotpath.split(".")
+    # Flatten all parts into a single list of navigation steps
+    steps = []
+    for part in parts:
+        steps.extend(_parse_part(part))
+
+    if not steps:
+        return
+
     current = obj
-    for part in parts[:-1]:
-        if isinstance(current, dict) and part in current:
-            current = current[part]
+    for step in steps[:-1]:
+        if isinstance(step, int):
+            if isinstance(current, list) and 0 <= step < len(current):
+                current = current[step]
+            else:
+                return
+        elif isinstance(current, dict) and step in current:
+            current = current[step]
         else:
-            return  # path doesn't exist — skip silently
-    if isinstance(current, dict):
-        current[parts[-1]] = value
+            return
+
+    last = steps[-1]
+    if isinstance(last, int):
+        if isinstance(current, list) and 0 <= last < len(current):
+            current[last] = value
+    elif isinstance(current, dict):
+        current[last] = value

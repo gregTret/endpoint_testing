@@ -7,8 +7,8 @@
  * Multipart/form-data requests get a specialised per-part editor
  * with preset attack templates for file-upload security testing.
  *
- * Token overlays: textareas get transparent overlays that tokenize
- * values for right-click AI injection suggestions.
+ * Payload bank buttons let users inject payloads from the local
+ * injection bank into editable fields.
  */
 window.Intercept = (() => {
     const API = 'http://127.0.0.1:8000/api';
@@ -26,11 +26,6 @@ window.Intercept = (() => {
     let multipartSection, multipartPartsEl, presetSelect;
     let jsonUploadSection, jsonUploadFilesEl, jsonUploadPresetSelect, jsonUploadRawEl;
     let historyCountEl, interceptPane;
-
-    // Token overlay state
-    const _overlays = {};         // fieldId → { el, overlay, wrapper, fieldType }
-    let _activeToken = null;      // { fieldId, start, end, value, name }
-    let _selectionDebounce = null; // timer for mouseup text-selection trigger
 
     // Revert-to-original state
     let _originalValues = null;   // { method, url, headers, body } | null
@@ -65,25 +60,6 @@ window.Intercept = (() => {
         return fieldValue.substring(0, start) + payload + fieldValue.substring(end);
     }
 
-    /**
-     * Check if a cursor position inside a textarea sits within a JSON string value.
-     * Used to tell the AI backend to return JSON-compatible payloads.
-     */
-    function _isInsideJsonString(el, pos) {
-        if (!el) return false;
-        const text = el.value || '';
-        const trimmed = text.trim();
-        if (trimmed[0] !== '{' && trimmed[0] !== '[') return false;
-        try { JSON.parse(trimmed); } catch (_) { return false; }
-        // Walk backwards from pos looking for an unescaped quote
-        for (let i = pos - 1; i >= 0; i--) {
-            const ch = text[i];
-            if (ch === '"' && (i === 0 || text[i - 1] !== '\\')) return true;
-            if (ch === ':' || ch === ',' || ch === '{' || ch === '[' || ch === '}' || ch === ']') return false;
-        }
-        return false;
-    }
-
     // ── Revert helpers ────────────────────────────────────────────
 
     function _snapshotOriginals() {
@@ -107,7 +83,6 @@ window.Intercept = (() => {
         if (headersEl) headersEl.value = _originalValues.headers;
         if (bodyEl) bodyEl.value = _originalValues.body;
         if (revertBtn) revertBtn.classList.add('hidden');
-        requestAnimationFrame(_refreshAllOverlays);
     }
 
     function init() {
@@ -336,9 +311,7 @@ window.Intercept = (() => {
             respHeadersEl.value = _fmtHeaders(flow.headers);
             respBodyEl.value = flow.body || '';
         }
-        // Snapshot for revert and refresh overlays
         _snapshotOriginals();
-        requestAnimationFrame(_refreshAllOverlays);
     }
 
     // ── Multipart part rendering ─────────────────────────────────
@@ -832,44 +805,15 @@ window.Intercept = (() => {
         });
     }
 
-    // ── AI Suggest integration (token overlay system) ──────────
+    // ── Payload bank integration ────────────────────────────────
 
-    const _OVERLAY_FIELDS = {
-        'intercept-headers': 'header',
-        'intercept-body':    'body',
-        'intercept-url':     'param',
-    };
+    let _suggestTarget = null;
 
     function _initAiSuggest() {
-        // Build transparent overlay for each editable field
-        for (const [id, fieldType] of Object.entries(_OVERLAY_FIELDS)) {
-            const el = document.getElementById(id);
-            if (!el) continue;
-            _buildOverlay(el, id, fieldType);
-        }
-
-        // Mode 1: text selection via mouseup with 300ms debounce
-        const selectableEls = [headersEl, bodyEl, urlEl];
-        selectableEls.forEach(el => {
-            if (!el) return;
-            el.addEventListener('mouseup', _onFieldMouseUp);
-            // Track selection glow
-            el.addEventListener('select', () => _updateSelectionGlow(el));
-            el.addEventListener('keyup', () => _updateSelectionGlow(el));
-            el.addEventListener('blur', () => el.classList.remove('has-selection'));
-        });
-
-        // When user picks a suggestion from the AiSuggest popup, replace the token
+        // When user picks a payload from the bank popup, replace text in the target field
         document.addEventListener('ai-triage-select', (e) => {
             const payload = (e.detail && e.detail.payload) || '';
             if (!payload) return;
-            // Prefer active token (right-click on overlay token)
-            if (_activeToken) {
-                _applyTokenPayload(payload);
-                return;
-            }
-            // Fallback: replace text selection in the last-focused field
-            // Guard: only act if target is an intercept field
             if (_suggestTarget && _isInterceptField(_suggestTarget)) {
                 _replaceTextSelection(_suggestTarget, payload);
                 _suggestTarget = null;
@@ -882,40 +826,31 @@ window.Intercept = (() => {
                el === respHeadersEl || el === respBodyEl;
     }
 
-    // ── AI Suggest buttons (send entire field) ────────────────────
+    // ── Payload bank buttons ─────────────────────────────────────
 
     function _initAiSuggestButtons() {
-        const aiBodyBtn = document.getElementById('btn-intercept-ai-body');
-        const aiHeadersBtn = document.getElementById('btn-intercept-ai-headers');
+        const bodyBtn = document.getElementById('btn-intercept-ai-body');
+        const headersBtn = document.getElementById('btn-intercept-ai-headers');
 
-        if (aiBodyBtn) {
-            aiBodyBtn.addEventListener('click', (e) => {
+        if (bodyBtn) {
+            bodyBtn.addEventListener('click', (e) => {
                 e.preventDefault();
-                _sendFieldToAiSuggest(bodyEl, 'body', e);
+                _openPayloadBank(bodyEl, e);
             });
         }
-        if (aiHeadersBtn) {
-            aiHeadersBtn.addEventListener('click', (e) => {
+        if (headersBtn) {
+            headersBtn.addEventListener('click', (e) => {
                 e.preventDefault();
-                _sendFieldToAiSuggest(headersEl, 'header', e);
+                _openPayloadBank(headersEl, e);
             });
         }
     }
 
-    function _sendFieldToAiSuggest(el, fieldType, e) {
-        if (!el || !el.value.trim()) return;
+    function _openPayloadBank(el, e) {
+        if (!el) return;
         if (typeof AiSuggest === 'undefined') return;
 
-        const text = el.value.trim();
         _suggestTarget = el;
-        _activeToken = null;
-
-        // Select all text so the replacement works on the full content
-        el.selectionStart = 0;
-        el.selectionEnd = el.value.length;
-        el.classList.add('has-selection');
-
-        const context = _buildSelectionContext(el, text);
 
         const rect = {
             top: e.clientY,
@@ -924,108 +859,14 @@ window.Intercept = (() => {
             right: e.clientX + 2,
         };
 
-        AiSuggest.showForSelection(text, context, rect);
-    }
-
-    // ── Selection glow indicator ─────────────────────────────────
-
-    function _updateSelectionGlow(el) {
-        if (el.selectionStart !== el.selectionEnd) {
-            el.classList.add('has-selection');
-        } else {
-            el.classList.remove('has-selection');
-        }
-    }
-
-    // ── Mode 1: text selection trigger ───────────────────────────
-
-    let _suggestTarget = null;
-
-    function _onFieldMouseUp(e) {
-        const el = e.target;
-        if (el.disabled || el.readOnly) return;
-
-        clearTimeout(_selectionDebounce);
-        _selectionDebounce = setTimeout(() => {
-            _updateSelectionGlow(el);
-            if (el.selectionStart === el.selectionEnd) return;
-            const text = el.value.substring(el.selectionStart, el.selectionEnd).trim();
-            if (!text || text.length < 2) return;
-
-            _suggestTarget = el;
-            _activeToken = null; // clear overlay token since this is a manual selection
-
-            const context = _buildSelectionContext(el, text);
-
-            // Approximate anchor position from mouse event
-            const rect = {
-                top: e.clientY,
-                bottom: e.clientY + 2,
-                left: e.clientX,
-                right: e.clientX + 2,
-            };
-
-            if (typeof AiSuggest !== 'undefined') {
-                AiSuggest.showForSelection(text, context, rect);
-            }
-        }, 300);
-    }
-
-    function _buildSelectionContext(el, text) {
-        const methodVal = methodEl ? methodEl.value : 'GET';
-        const urlVal = urlEl ? urlEl.value : '';
-        const bodyVal = bodyEl ? bodyEl.value : '';
-        let hdrs = {};
-        try { hdrs = JSON.parse(headersEl ? headersEl.value : '{}'); } catch (_) {}
-
-        let fieldType = 'param';
-        if (el === urlEl) fieldType = 'url';
-        else if (el === headersEl) fieldType = 'header';
-        else if (el === bodyEl) fieldType = 'body';
-
-        // Try to find the field name (key) for this value
-        let fieldName = 'unknown';
-        if (el === urlEl) {
-            const qIdx = urlVal.indexOf('?');
-            if (qIdx !== -1) {
-                const pairs = urlVal.substring(qIdx + 1).split('&');
-                for (const p of pairs) {
-                    const eqIdx = p.indexOf('=');
-                    if (eqIdx !== -1 && decodeURIComponent(p.substring(eqIdx + 1)) === text) {
-                        fieldName = p.substring(0, eqIdx);
-                        break;
-                    }
-                }
-            }
-            if (fieldName === 'unknown') fieldName = 'url_path';
-        } else {
-            const val = el.value;
-            const idx = val.indexOf(text);
-            if (idx > 0) {
-                const before = val.substring(Math.max(0, idx - 100), idx);
-                const keyMatch = before.match(/"([^"]+)"\s*:\s*"?$/);
-                if (keyMatch) fieldName = keyMatch[1];
-            }
-        }
-
-        const isJsonValue = _isInsideJsonString(el, el.selectionStart);
-
-        return {
-            field_type: fieldType,
-            field_name: fieldName,
-            method: methodVal,
-            url: urlVal,
-            full_body: bodyVal.slice(0, 1000),
-            full_headers: hdrs,
-            is_json_value: isJsonValue,
-        };
+        AiSuggest.showForSelection(el.value, {}, rect);
     }
 
     function _replaceTextSelection(el, replacement) {
         if (!el) return;
         const start = el.selectionStart;
         const end = el.selectionEnd;
-        if (start === end) return;
+        // start === end → insert at cursor; start !== end → replace selection
         el.value = _jsonSafeReplace(el.value, start, end, replacement);
         el.selectionStart = el.selectionEnd = start + replacement.length;
         el.classList.remove('has-selection');
@@ -1033,299 +874,6 @@ window.Intercept = (() => {
         el.focus();
         _showRevert();
         _flashInjectConfirm();
-    }
-
-    function _buildOverlay(el, id, fieldType) {
-        const wrapper = document.createElement('div');
-        wrapper.className = 'intercept-token-wrapper';
-
-        const overlay = document.createElement('div');
-        overlay.className = 'intercept-token-overlay';
-        overlay.dataset.fieldId = id;
-
-        el.parentNode.style.position = 'relative';
-        el.parentNode.insertBefore(wrapper, el.nextSibling);
-        wrapper.appendChild(overlay);
-
-        _overlays[id] = { el, overlay, wrapper, fieldType };
-
-        el.addEventListener('input', () => _refreshOverlay(id));
-        el.addEventListener('scroll', () => {
-            overlay.scrollTop = el.scrollTop;
-            overlay.scrollLeft = el.scrollLeft;
-        });
-
-        const ro = new ResizeObserver(() => _refreshOverlay(id));
-        ro.observe(el);
-    }
-
-    function _refreshAllOverlays() {
-        for (const id of Object.keys(_overlays)) {
-            _refreshOverlay(id);
-        }
-    }
-
-    function _refreshOverlay(id) {
-        const info = _overlays[id];
-        if (!info) return;
-        const el = info.el;
-        const overlay = info.overlay;
-        const wrapper = info.wrapper;
-
-        // Hide overlay if field is invisible or disabled
-        if (el.offsetParent === null || el.disabled) {
-            wrapper.style.display = 'none';
-            return;
-        }
-        wrapper.style.display = '';
-
-        // Position and size to match the field exactly
-        wrapper.style.position = 'absolute';
-        wrapper.style.left = el.offsetLeft + 'px';
-        wrapper.style.top = el.offsetTop + 'px';
-        wrapper.style.width = el.offsetWidth + 'px';
-        wrapper.style.height = el.offsetHeight + 'px';
-        wrapper.style.overflow = 'hidden';
-        wrapper.style.pointerEvents = 'none';
-        wrapper.style.zIndex = '5';
-
-        const cs = getComputedStyle(el);
-        overlay.style.fontFamily = cs.fontFamily;
-        overlay.style.fontSize = cs.fontSize;
-        overlay.style.lineHeight = cs.lineHeight;
-        overlay.style.letterSpacing = cs.letterSpacing;
-        overlay.style.padding = cs.padding;
-        overlay.style.whiteSpace = el.tagName === 'TEXTAREA' ? 'pre-wrap' : 'pre';
-        overlay.style.overflowWrap = 'break-word';
-        overlay.style.wordBreak = cs.wordBreak;
-        overlay.style.width = '100%';
-        overlay.style.height = '100%';
-        overlay.style.overflow = 'hidden';
-        overlay.style.color = 'transparent';
-        overlay.style.border = 'none';
-        overlay.style.background = 'transparent';
-
-        overlay.scrollTop = el.scrollTop;
-        overlay.scrollLeft = el.scrollLeft;
-
-        // Tokenize and render
-        const text = el.value;
-        const tokens = _tokenizeField(text, info.fieldType);
-        overlay.innerHTML = '';
-
-        let lastIdx = 0;
-        for (const tok of tokens) {
-            if (tok.start > lastIdx) {
-                overlay.appendChild(document.createTextNode(text.slice(lastIdx, tok.start)));
-            }
-            const span = document.createElement('span');
-            span.className = 'intercept-token';
-            span.textContent = tok.value;
-            span.dataset.start = tok.start;
-            span.dataset.end = tok.end;
-            span.dataset.fieldId = id;
-            span.dataset.name = tok.name || '';
-            span.style.pointerEvents = 'auto';
-            span.style.cursor = 'context-menu';
-
-            span.addEventListener('mouseenter', () => span.classList.add('intercept-token-hover'));
-            span.addEventListener('mouseleave', () => span.classList.remove('intercept-token-hover'));
-            span.addEventListener('contextmenu', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                _onTokenContext(e, id, tok);
-            });
-            overlay.appendChild(span);
-            lastIdx = tok.end;
-        }
-        if (lastIdx < text.length) {
-            overlay.appendChild(document.createTextNode(text.slice(lastIdx)));
-        }
-    }
-
-    // ── Tokenizers ───────────────────────────────────────────────
-
-    function _tokenizeField(text, fieldType) {
-        if (fieldType === 'header') return _tokenizeHeadersJSON(text);
-        if (fieldType === 'body')   return _tokenizeBody(text);
-        if (fieldType === 'param')  return _tokenizeUrl(text);
-        return [];
-    }
-
-    function _tokenizeHeadersJSON(text) {
-        const tokens = [];
-        try {
-            const parsed = JSON.parse(text);
-            for (const [key, val] of Object.entries(parsed)) {
-                if (typeof val !== 'string') continue;
-                const valStr = JSON.stringify(val);
-                const keyStr = JSON.stringify(key);
-                // Match  "key": "value"  or  "key":"value"
-                const pat1 = keyStr + ': ' + valStr;
-                const pat2 = keyStr + ':' + valStr;
-                let idx = text.indexOf(pat1);
-                let sepLen = keyStr.length + 2; // ": "
-                if (idx < 0) {
-                    idx = text.indexOf(pat2);
-                    sepLen = keyStr.length + 1;
-                }
-                if (idx >= 0) {
-                    const valStart = idx + sepLen + 1; // +1 skip opening "
-                    const valEnd = valStart + val.length;
-                    if (valEnd <= text.length && val.length > 0) {
-                        tokens.push({ start: valStart, end: valEnd, value: val, name: key });
-                    }
-                }
-            }
-        } catch (_) {}
-        return tokens;
-    }
-
-    function _tokenizeBody(text) {
-        const tokens = [];
-        const trimmed = text.trim();
-        if (!trimmed) return tokens;
-
-        if (trimmed[0] === '{' || trimmed[0] === '[') {
-            try {
-                const parsed = JSON.parse(trimmed);
-                _walkJSON(parsed, trimmed, tokens, '', new Set());
-                return tokens;
-            } catch (_) {}
-        }
-
-        // URL-encoded form
-        if (trimmed.includes('=') && !trimmed.includes('<')) {
-            const pairs = trimmed.split('&');
-            let offset = 0;
-            for (const pair of pairs) {
-                const eqIdx = pair.indexOf('=');
-                if (eqIdx > 0) {
-                    const key = pair.slice(0, eqIdx);
-                    const val = pair.slice(eqIdx + 1);
-                    if (val.length > 0) {
-                        const valStart = offset + eqIdx + 1;
-                        tokens.push({ start: valStart, end: valStart + val.length, value: val, name: key });
-                    }
-                }
-                offset += pair.length + 1;
-            }
-        }
-        return tokens;
-    }
-
-    function _walkJSON(obj, fullText, tokens, prefix, usedPositions) {
-        if (obj === null || obj === undefined) return;
-        if (typeof obj === 'string' || typeof obj === 'number' || typeof obj === 'boolean') {
-            const valStr = JSON.stringify(obj);
-            let from = 0;
-            while (from < fullText.length) {
-                const idx = fullText.indexOf(valStr, from);
-                if (idx < 0) break;
-                if (!usedPositions.has(idx)) {
-                    const innerStart = typeof obj === 'string' ? idx + 1 : idx;
-                    const innerEnd = typeof obj === 'string' ? idx + valStr.length - 1 : idx + valStr.length;
-                    if (innerEnd > innerStart) {
-                        tokens.push({ start: innerStart, end: innerEnd, value: String(obj), name: prefix || 'value' });
-                        usedPositions.add(idx);
-                    }
-                    break;
-                }
-                from = idx + 1;
-            }
-            return;
-        }
-        if (Array.isArray(obj)) {
-            obj.forEach((item, i) => _walkJSON(item, fullText, tokens, prefix ? prefix + '[' + i + ']' : '[' + i + ']', usedPositions));
-            return;
-        }
-        if (typeof obj === 'object') {
-            for (const [k, v] of Object.entries(obj)) {
-                _walkJSON(v, fullText, tokens, prefix ? prefix + '.' + k : k, usedPositions);
-            }
-        }
-    }
-
-    function _tokenizeUrl(text) {
-        const tokens = [];
-        try {
-            const url = new URL(text);
-            for (const [key, val] of url.searchParams.entries()) {
-                if (!val) continue;
-                const encoded = encodeURIComponent(val);
-                const searchStr = key + '=' + encoded;
-                const idx = text.indexOf(searchStr);
-                if (idx >= 0) {
-                    const valStart = idx + key.length + 1;
-                    tokens.push({ start: valStart, end: valStart + encoded.length, value: val, name: key });
-                }
-            }
-            const pathStart = text.indexOf(url.pathname);
-            if (pathStart >= 0) {
-                const segments = url.pathname.split('/').filter(Boolean);
-                let segOff = pathStart + 1;
-                for (const seg of segments) {
-                    const segIdx = text.indexOf(seg, segOff);
-                    if (segIdx >= 0 && seg.length > 0) {
-                        tokens.push({ start: segIdx, end: segIdx + seg.length, value: seg, name: 'path' });
-                        segOff = segIdx + seg.length + 1;
-                    }
-                }
-            }
-        } catch (_) {}
-        return tokens;
-    }
-
-    // ── Token right-click → AiSuggest popup ─────────────────────
-
-    function _onTokenContext(e, fieldId, token) {
-        _activeToken = { fieldId, start: token.start, end: token.end, value: token.value, name: token.name };
-        _suggestTarget = null; // clear text-selection mode — token mode takes priority
-
-        if (typeof AiSuggest === 'undefined') return;
-
-        const info = _overlays[fieldId];
-        const methodVal = methodEl ? methodEl.value : 'GET';
-        const urlVal = urlEl ? urlEl.value : '';
-        const bodyVal = bodyEl ? bodyEl.value : '';
-        let hdrs = {};
-        try { hdrs = JSON.parse(headersEl ? headersEl.value : '{}'); } catch (_) {}
-
-        // Detect if the token is inside a JSON string value
-        const isJsonValue = _isInsideJsonString(info ? info.el : null, token.start);
-
-        const context = {
-            field_type: info ? info.fieldType : 'param',
-            field_name: token.name || '',
-            method: methodVal,
-            url: urlVal,
-            full_body: bodyVal.slice(0, 1000),
-            full_headers: hdrs,
-            is_json_value: isJsonValue,
-        };
-
-        const rect = {
-            top: e.clientY,
-            bottom: e.clientY + 2,
-            left: e.clientX,
-            right: e.clientX + 2,
-        };
-
-        AiSuggest.showForSelection(token.value, context, rect);
-    }
-
-    function _applyTokenPayload(payload) {
-        if (!_activeToken) return;
-        const info = _overlays[_activeToken.fieldId];
-        if (!info) return;
-
-        const el = info.el;
-        el.value = _jsonSafeReplace(el.value, _activeToken.start, _activeToken.end, payload);
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-
-        _showRevert();
-        _flashInjectConfirm();
-        _activeToken = null;
     }
 
     function _flashInjectConfirm() {
