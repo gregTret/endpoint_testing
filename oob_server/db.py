@@ -1,5 +1,7 @@
 import aiosqlite
+import hashlib
 import json
+import os
 import time
 from pathlib import Path
 
@@ -25,7 +27,50 @@ async def init_db():
         """)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_key ON callbacks (key)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_key_token ON callbacks (key, token)")
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                salt TEXT NOT NULL,
+                created_at REAL NOT NULL
+            )
+        """)
         await db.commit()
+
+
+def _hash_password(password: str, salt: bytes) -> str:
+    return hashlib.pbkdf2_hmac(
+        "sha256", password.encode(), salt, iterations=600_000
+    ).hex()
+
+
+async def create_user(username: str, password: str):
+    salt = os.urandom(32)
+    pw_hash = _hash_password(password, salt)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO users (username, password_hash, salt, created_at) VALUES (?, ?, ?, ?)",
+            (username, pw_hash, salt.hex(), time.time()),
+        )
+        await db.commit()
+    print(f"[+] User '{username}' created successfully")
+    # Verify it round-trips
+    ok = await verify_user(username, password)
+    print(f"[+] Verification: {'PASS' if ok else 'FAIL'}")
+
+
+async def verify_user(username: str, password: str) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT password_hash, salt FROM users WHERE username = ?", (username,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row is None:
+                return False
+            salt = bytes.fromhex(row["salt"])
+            return _hash_password(password, salt) == row["password_hash"]
 
 
 async def store_callback(
@@ -95,6 +140,37 @@ async def get_callbacks(key: str, token: str | None = None, since: float | None 
                 }
                 for row in rows
             ]
+
+
+async def get_all_callbacks(limit: int = 500, offset: int = 0):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        query = "SELECT * FROM callbacks ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+        async with db.execute(query, (limit, offset)) as cursor:
+            rows = await cursor.fetchall()
+            return [
+                {
+                    "id": row["id"],
+                    "key": row["key"],
+                    "token": row["token"],
+                    "timestamp": row["timestamp"],
+                    "source_ip": row["source_ip"],
+                    "method": row["method"],
+                    "path": row["path"],
+                    "headers": json.loads(row["headers"]),
+                    "body": row["body"],
+                    "query_params": json.loads(row["query_params"]),
+                    "extra_path": row["extra_path"],
+                }
+                for row in rows
+            ]
+
+
+async def get_callback_count() -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM callbacks") as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
 
 
 async def delete_callbacks(key: str):

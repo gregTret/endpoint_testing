@@ -1,12 +1,61 @@
+import hashlib
+import hmac
 import json
+import secrets
 import time
 from contextlib import asynccontextmanager
+from http.cookies import SimpleCookie
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException, Query, Response
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from db import init_db, store_callback, get_callbacks, delete_callbacks
+from db import init_db, store_callback, get_callbacks, get_all_callbacks, get_callback_count, delete_callbacks, verify_user
+
+# --- Session auth ---
+
+# Random signing key generated each server start.
+# Sessions invalidate on restart — acceptable for a single-user tool.
+_SESSION_SECRET = secrets.token_bytes(32)
+_SESSION_MAX_AGE = 60 * 60 * 24 * 7  # 7 days
+
+
+def _sign_session(username: str, expires: float) -> str:
+    payload = f"{username}:{expires}"
+    sig = hmac.new(_SESSION_SECRET, payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}:{sig}"
+
+
+def _verify_session_cookie(cookie_val: str) -> str | None:
+    """Return username if valid, None otherwise."""
+    parts = cookie_val.split(":")
+    if len(parts) != 3:
+        return None
+    username, expires_str, sig = parts
+    try:
+        expires = float(expires_str)
+    except ValueError:
+        return None
+    if time.time() > expires:
+        return None
+    expected = hmac.new(_SESSION_SECRET, f"{username}:{expires_str}".encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return None
+    return username
+
+
+def _get_session_user(request: Request) -> str | None:
+    cookie_val = request.cookies.get("session")
+    if not cookie_val:
+        return None
+    return _verify_session_cookie(cookie_val)
+
+
+def _require_session(request: Request) -> str:
+    user = _get_session_user(request)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user
 
 
 # --- In-memory pub/sub for live viewers ---
@@ -46,6 +95,98 @@ app.add_middleware(
 )
 
 
+# --- Login ---
+
+
+LOGIN_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Login</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@radix-ui/colors@3.0.0/gray-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@radix-ui/colors@3.0.0/red-dark.css">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--gray-1);color:var(--gray-9);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh}
+  body::after{content:'';position:fixed;inset:0;background:radial-gradient(ellipse at 50% 40%,rgba(255,255,255,.02),transparent 70%);pointer-events:none}
+  form{width:280px;position:relative;z-index:1}
+  input{display:block;width:100%;background:transparent;border:none;border-bottom:1px solid var(--gray-4);color:var(--gray-12);padding:12px 0 8px;font-size:15px;outline:none;transition:border-color .2s;-webkit-text-fill-color:var(--gray-12)}
+  input:-webkit-autofill,input:-webkit-autofill:hover,input:-webkit-autofill:focus{-webkit-box-shadow:0 0 0 1000px var(--gray-1) inset;-webkit-text-fill-color:var(--gray-12);transition:background-color 5000s ease-in-out 0s}
+  input:focus{border-color:var(--gray-7)}
+  input::placeholder{color:var(--gray-6);-webkit-text-fill-color:var(--gray-6)}
+  input+input{margin-top:24px}
+  button{display:block;width:100%;background:transparent;border:1px solid var(--gray-4);color:var(--gray-9);padding:10px;margin-top:32px;font-size:13px;letter-spacing:.5px;cursor:pointer;transition:all .15s}
+  button:hover{border-color:var(--gray-6);color:var(--gray-11)}
+  .err{color:var(--red-9);font-size:12px;text-align:center;margin-bottom:16px;opacity:0;transition:opacity .2s}
+  .err.on{opacity:1}
+</style>
+</head>
+<body class="dark">
+<form id="f">
+  <div class="err" id="err">invalid credentials</div>
+  <input type="text" name="username" placeholder="username" autocomplete="username" autofocus required>
+  <input type="password" name="password" placeholder="password" autocomplete="current-password" required>
+  <button type="submit">enter</button>
+</form>
+<script>
+document.getElementById('f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const err = document.getElementById('err');
+  err.classList.remove('on');
+  const fd = new FormData(e.target);
+  try {
+    const r = await fetch('/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: new URLSearchParams({username: fd.get('username'), password: fd.get('password')}),
+    });
+    if (r.ok) { window.location.href = '/api/live'; }
+    else { err.classList.add('on'); }
+  } catch(_) { err.classList.add('on'); }
+});
+</script>
+</body>
+</html>"""
+
+
+@app.get("/", response_class=HTMLResponse)
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    if _get_session_user(request):
+        return RedirectResponse("/api/live", status_code=302)
+    return LOGIN_HTML
+
+
+@app.post("/login")
+async def login_submit(request: Request):
+    from urllib.parse import parse_qs
+    body = (await request.body()).decode()
+    parsed = parse_qs(body)
+    username = parsed.get("username", [""])[0]
+    password = parsed.get("password", [""])[0]
+    if not username or not password or not await verify_user(username, password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    expires = time.time() + _SESSION_MAX_AGE
+    cookie_val = _sign_session(username, expires)
+    response = Response('{"ok": true}', media_type="application/json")
+    response.set_cookie(
+        "session", cookie_val,
+        max_age=_SESSION_MAX_AGE,
+        httponly=False,
+        samesite="lax",
+        secure=False,  # set True if always behind HTTPS
+    )
+    return response
+
+
+@app.get("/logout")
+async def logout():
+    response = RedirectResponse("/login", status_code=302)
+    response.delete_cookie("session")
+    return response
+
+
 # --- API routes (registered first so they take priority) ---
 
 
@@ -67,6 +208,18 @@ async def health(request: Request):
     return {"status": "ok"}
 
 
+@app.get("/api/callbacks")
+async def list_all_callbacks(
+    request: Request,
+    limit: int = Query(500, ge=1, le=50000),
+    offset: int = Query(0, ge=0),
+):
+    _require_session(request)
+    results = await get_all_callbacks(limit=limit, offset=offset)
+    total = await get_callback_count()
+    return {"count": len(results), "total": total, "callbacks": results}
+
+
 @app.get("/api/callbacks/{key}/{token}")
 async def list_callbacks_for_token(key: str, token: str, since: float | None = None):
     results = await get_callbacks(key, token=token, since=since)
@@ -80,7 +233,8 @@ async def list_callbacks(key: str, since: float | None = None):
 
 
 @app.delete("/api/callbacks/{key}")
-async def clear_callbacks(key: str):
+async def clear_callbacks(request: Request, key: str):
+    _require_session(request)
     await delete_callbacks(key)
     return {"status": "cleared", "key": key}
 
@@ -89,8 +243,27 @@ async def clear_callbacks(key: str):
 
 
 @app.websocket("/api/ws")
-async def live_ws(ws: WebSocket):
+async def live_ws(ws: WebSocket, token: str = Query("")):
+    # Accept first — closing before accept hangs some proxies (Cloudflare)
     await ws.accept()
+
+    # Try cookie auth first
+    cookie_header = ws.headers.get("cookie", "")
+    session_val = None
+    for part in cookie_header.split(";"):
+        part = part.strip()
+        if part.startswith("session="):
+            session_val = part[len("session="):]
+            break
+    authed = session_val and _verify_session_cookie(session_val)
+
+    # Fallback: token query param (session cookie value passed explicitly)
+    if not authed and token:
+        authed = _verify_session_cookie(token)
+
+    if not authed:
+        await ws.close(code=4001, reason="Unauthorized")
+        return
     _subscribers.append(ws)
     try:
         while True:
@@ -109,226 +282,225 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OOB Callbacks — Live</title>
+<title>OOB Callbacks</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@radix-ui/colors@3.0.0/gray-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@radix-ui/colors@3.0.0/blue-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@radix-ui/colors@3.0.0/violet-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@radix-ui/colors@3.0.0/amber-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@radix-ui/colors@3.0.0/red-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@radix-ui/colors@3.0.0/green-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@radix-ui/colors@3.0.0/indigo-dark.css">
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
-  body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:14px}
-  .topbar{background:#161b22;border-bottom:1px solid #30363d;padding:12px 20px;display:flex;align-items:center;gap:16px;position:sticky;top:0;z-index:10}
-  .topbar h1{font-size:16px;font-weight:600;color:#58a6ff}
-  .dot{width:8px;height:8px;border-radius:50%;background:#3fb950;animation:pulse 2s infinite}
-  .dot.dead{background:#f85149;animation:none}
-  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-  .conn-status{font-size:11px;color:#8b949e}
-  .filters{display:flex;gap:8px;margin-left:auto}
-  .filters input{background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:4px 8px;border-radius:4px;font-size:13px;width:120px}
-  .filters input:focus{border-color:#58a6ff;outline:none}
-  .btn-clear{background:#21262d;border:1px solid #30363d;color:#f85149;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px}
-  .btn-clear:hover{background:#3a1f1f;border-color:#f85149}
-  .stats{padding:8px 20px;background:#161b22;border-bottom:1px solid #30363d;display:flex;gap:24px;font-size:13px;color:#8b949e}
-  .stats .val{color:#c9d1d9;font-weight:600}
-  #feed{padding:12px 20px;display:flex;flex-direction:column;gap:8px}
-  .card{background:#161b22;border:1px solid #30363d;border-radius:8px;overflow:hidden;transition:border-color .2s}
-  .card.fresh{border-color:#3fb950;animation:fadeBorder 3s forwards}
-  @keyframes fadeBorder{to{border-color:#30363d}}
-  .card:hover{border-color:#484f58}
-  .card-head{padding:10px 14px;display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none}
-  .card-head:hover{background:#1c2129}
-  .method{font-size:11px;font-weight:700;padding:2px 8px;border-radius:3px;text-transform:uppercase;flex-shrink:0}
-  .method-GET{background:#1f3a2d;color:#3fb950}
-  .method-POST{background:#2a1f3a;color:#bc8cff}
-  .method-PUT{background:#3a2f1f;color:#d29922}
-  .method-DELETE{background:#3a1f1f;color:#f85149}
-  .method-PATCH{background:#1f2d3a;color:#58a6ff}
-  .method-HEAD,.method-OPTIONS{background:#1f2a2a;color:#8b949e}
-  .path{color:#58a6ff;font-family:monospace;font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .meta{display:flex;gap:12px;font-size:12px;color:#8b949e;flex-shrink:0}
-  .tag{background:#0d1117;padding:2px 6px;border-radius:3px;font-family:monospace;font-size:11px}
-  .tag-key{color:#d29922}
-  .tag-token{color:#bc8cff}
-  .ip{color:#8b949e;font-family:monospace}
-  .ts{color:#484f58}
-  .arrow{color:#484f58;transition:transform .2s;font-size:10px}
-  .card.open .arrow{transform:rotate(90deg)}
-  .card-body{display:none;border-top:1px solid #30363d;padding:14px}
-  .card.open .card-body{display:block}
-  .section{margin-bottom:12px}
-  .section:last-child{margin-bottom:0}
-  .section-title{font-size:11px;text-transform:uppercase;color:#8b949e;margin-bottom:6px;font-weight:600;letter-spacing:.5px}
-  .kv-grid{display:grid;grid-template-columns:minmax(120px,auto) 1fr;gap:2px 12px;font-size:12px;font-family:monospace}
-  .kv-grid .k{color:#8b949e;text-align:right;padding:2px 0;word-break:break-all}
-  .kv-grid .v{color:#c9d1d9;padding:2px 0;word-break:break-all}
-  .body-content{background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:8px 10px;font-family:monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;max-height:200px;overflow:auto;color:#c9d1d9}
-  .empty{text-align:center;padding:60px 20px;color:#484f58;font-size:15px}
-  .qp{color:#d29922}
+  body{background:var(--gray-1);color:var(--gray-11);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;font-size:13px}
+
+  /* topbar */
+  .bar{position:sticky;top:0;z-index:10;background:var(--gray-1);border-bottom:1px solid var(--gray-3);padding:10px 20px;display:flex;align-items:center;gap:12px}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--green-9);flex-shrink:0}
+  .dot.off{background:var(--red-9)}
+  @keyframes blink{50%{opacity:.3}}
+  .dot:not(.off){animation:blink 2.5s ease-in-out infinite}
+  .title{font-size:13px;font-weight:600;color:var(--gray-12);letter-spacing:-.2px}
+  .conn{font-size:11px;color:var(--gray-8)}
+  .spacer{flex:1}
+  .bar input{background:var(--gray-2);border:1px solid var(--gray-4);color:var(--gray-12);padding:5px 10px;border-radius:4px;font-size:12px;width:100px;outline:none;transition:border-color .15s;-webkit-text-fill-color:var(--gray-12)}
+  .bar input:-webkit-autofill,.bar input:-webkit-autofill:hover,.bar input:-webkit-autofill:focus{-webkit-box-shadow:0 0 0 1000px var(--gray-2) inset;-webkit-text-fill-color:var(--gray-12);transition:background-color 5000s ease-in-out 0s}
+  .bar input:focus{border-color:var(--gray-7)}
+  .bar input::placeholder{color:var(--gray-7);-webkit-text-fill-color:var(--gray-7)}
+  .bar button,.bar a{background:none;border:1px solid var(--gray-4);color:var(--gray-9);padding:5px 12px;border-radius:4px;font-size:11px;cursor:pointer;text-decoration:none;white-space:nowrap;transition:all .15s}
+  .bar button:hover,.bar a:hover{border-color:var(--gray-6);color:var(--gray-11)}
+  .bar .del{color:var(--red-9)}
+  .bar .del:hover{border-color:var(--red-7);color:var(--red-11)}
+
+  /* stats row */
+  .stats{display:flex;gap:1px;background:var(--gray-3);border-bottom:1px solid var(--gray-3)}
+  .stat{flex:1;background:var(--gray-1);padding:10px 16px}
+  .stat-label{font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:var(--gray-8);margin-bottom:2px}
+  .stat-val{font-size:18px;font-weight:600;color:var(--gray-12);font-variant-numeric:tabular-nums}
+
+  /* feed */
+  #feed{padding:8px 0}
+  .empty{text-align:center;padding:48px 20px;color:var(--gray-7)}
+
+  /* row */
+  .row{border-bottom:1px solid var(--gray-3);transition:background .1s}
+  .row:hover{background:var(--gray-2)}
+  .row-head{display:flex;align-items:center;gap:8px;padding:8px 20px;cursor:pointer;user-select:none}
+  .arrow{color:var(--gray-7);font-size:9px;transition:transform .15s;width:12px;text-align:center;flex-shrink:0}
+  .row.open .arrow{transform:rotate(90deg)}
+  .method{font-size:10px;font-weight:700;text-transform:uppercase;width:52px;text-align:center;padding:2px 0;border-radius:3px;flex-shrink:0}
+  .m-GET{background:var(--green-3);color:var(--green-11)}.m-POST{background:var(--violet-3);color:var(--violet-11)}
+  .m-PUT{background:var(--amber-3);color:var(--amber-11)}.m-DELETE{background:var(--red-3);color:var(--red-11)}
+  .m-PATCH{background:var(--blue-3);color:var(--blue-11)}.m-HEAD,.m-OPTIONS{background:var(--gray-3);color:var(--gray-9)}
+  .path{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--indigo-11);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tag{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;background:var(--gray-3);padding:1px 6px;border-radius:3px}
+  .tag-k{color:var(--amber-11)}.tag-t{color:var(--violet-11)}
+  .ip{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--gray-8)}
+  .ts{font-size:11px;color:var(--gray-7);white-space:nowrap}
+  .meta{display:flex;align-items:center;gap:8px;flex-shrink:0}
+
+  /* detail */
+  .detail{display:none;border-top:1px solid var(--gray-3);padding:12px 20px 12px 40px}
+  .row.open .detail{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .sec-title{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--gray-8);margin-bottom:6px;font-weight:600}
+  .kv{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.6}
+  .kv .k{color:var(--gray-8)}.kv .v{color:var(--gray-11);word-break:break-all}
+  .kv .qv{color:var(--amber-11)}
+  .pre{background:var(--gray-2);border:1px solid var(--gray-3);border-radius:4px;padding:8px 10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:180px;overflow:auto;color:var(--gray-11)}
+
+  /* load more */
+  .load-row{text-align:center;padding:12px}
+  .load-row button{background:none;border:1px solid var(--gray-4);color:var(--gray-9);padding:6px 20px;border-radius:4px;font-size:12px;cursor:pointer;transition:all .15s}
+  .load-row button:hover{border-color:var(--gray-6);color:var(--gray-11)}
 </style>
 </head>
-<body>
-<div class="topbar">
+<body class="dark">
+<div class="bar">
   <div class="dot" id="conn-dot"></div>
-  <h1>OOB Callback Monitor</h1>
-  <span class="conn-status" id="conn-status">connecting...</span>
-  <div class="filters">
-    <input type="text" id="filter-key" placeholder="Filter key...">
-    <input type="text" id="filter-token" placeholder="Filter token...">
-    <input type="text" id="filter-ip" placeholder="Filter IP...">
-    <button class="btn-clear" id="btn-clear">Clear Feed</button>
-  </div>
+  <span class="title">OOB Callbacks</span>
+  <span class="conn" id="conn-status">connecting</span>
+  <span class="spacer"></span>
+  <input type="text" id="filter-key" placeholder="key">
+  <input type="text" id="filter-token" placeholder="token">
+  <input type="text" id="filter-ip" placeholder="ip">
+  <button class="del" id="btn-clear">clear</button>
+  <a href="/logout">logout</a>
 </div>
 <div class="stats">
-  <span>Total: <span class="val" id="stat-total">0</span></span>
-  <span>Keys: <span class="val" id="stat-keys">0</span></span>
-  <span>Tokens: <span class="val" id="stat-tokens">0</span></span>
-  <span>IPs: <span class="val" id="stat-ips">0</span></span>
+  <div class="stat"><div class="stat-label">Loaded</div><div class="stat-val" id="stat-total">0</div></div>
+  <div class="stat"><div class="stat-label">In DB</div><div class="stat-val" id="stat-db-total">--</div></div>
+  <div class="stat"><div class="stat-label">Keys</div><div class="stat-val" id="stat-keys">0</div></div>
+  <div class="stat"><div class="stat-label">Tokens</div><div class="stat-val" id="stat-tokens">0</div></div>
+  <div class="stat"><div class="stat-label">IPs</div><div class="stat-val" id="stat-ips">0</div></div>
 </div>
-<div id="feed"><div class="empty">Waiting for callbacks...</div></div>
+<div id="feed"><div class="empty">loading...</div></div>
 
 <script>
-const feed = document.getElementById('feed');
-const statTotal = document.getElementById('stat-total');
-const statKeys = document.getElementById('stat-keys');
-const statTokens = document.getElementById('stat-tokens');
-const statIps = document.getElementById('stat-ips');
-const filterKey = document.getElementById('filter-key');
-const filterToken = document.getElementById('filter-token');
-const filterIp = document.getElementById('filter-ip');
-const connDot = document.getElementById('conn-dot');
-const connStatus = document.getElementById('conn-status');
+const $=id=>document.getElementById(id);
+const feed=$('feed'),statTotal=$('stat-total'),statKeys=$('stat-keys'),statTokens=$('stat-tokens'),statIps=$('stat-ips'),statDbTotal=$('stat-db-total');
+const filterKey=$('filter-key'),filterToken=$('filter-token'),filterIp=$('filter-ip'),connDot=$('conn-dot'),connStatus=$('conn-status');
+let entries=[];const seenKeys=new Set,seenTokens=new Set,seenIps=new Set;const PAGE=500;let loadedAll=false,dbTotal=0;
 
-let entries = [];
-const seenKeys = new Set();
-const seenTokens = new Set();
-const seenIps = new Set();
+function fmtTime(ts){const d=new Date(ts*1000);return d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})+'.'+String(d.getMilliseconds()).padStart(3,'0')}
+function fmtDate(ts){const d=new Date(ts*1000);return d.toLocaleDateString('en-GB',{day:'2-digit',month:'short'})}
+function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
 
-function fmtTime(ts) {
-  const d = new Date(ts * 1000);
-  return d.toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit',second:'2-digit'})
-    + '.' + String(d.getMilliseconds()).padStart(3,'0');
+const SKIP=new Set(['cdn-loop','cf-ew-via','cf-ray','cf-visitor','cf-warp-tag-id','cf-worker','connection','upgrade-insecure-requests','sec-ch-ua','sec-ch-ua-mobile','sec-ch-ua-platform','sec-fetch-dest','sec-fetch-mode','sec-fetch-site','sec-fetch-user','sec-gpc','priority','accept-encoding','cache-control']);
+
+function buildRow(e,fresh){
+  const row=document.createElement('div');
+  row.className='row';
+  if(fresh)row.style.borderLeftColor='#22c55e';
+  const qp=e.query_params&&Object.keys(e.query_params).length?'?'+Object.entries(e.query_params).map(([k,v])=>k+'='+v).join('&'):'';
+
+  let hdrs='';
+  if(e.headers&&typeof e.headers==='object'){for(const[k,v]of Object.entries(e.headers)){if(SKIP.has(k.toLowerCase()))continue;hdrs+='<span class="k">'+esc(k)+': </span><span class="v">'+esc(v)+'</span><br>';}}
+  if(!hdrs)hdrs='<span class="k">none</span>';
+
+  let qpHtml='';
+  if(e.query_params&&Object.keys(e.query_params).length){for(const[k,v]of Object.entries(e.query_params)){qpHtml+='<span class="k">'+esc(k)+': </span><span class="qv">'+esc(v)+'</span><br>';}}
+
+  row.innerHTML=
+    '<div class="row-head">'+
+      '<span class="arrow">&#9654;</span>'+
+      '<span class="method m-'+esc(e.method)+'">'+esc(e.method)+'</span>'+
+      '<span class="path">'+esc(e.path+qp)+'</span>'+
+      '<div class="meta">'+
+        '<span class="tag tag-k">'+esc(e.key)+'</span>'+
+        '<span class="tag tag-t">'+esc(e.token)+'</span>'+
+        '<span class="ip">'+esc(e.source_ip)+'</span>'+
+        '<span class="ts">'+fmtDate(e.timestamp)+' '+fmtTime(e.timestamp)+'</span>'+
+      '</div>'+
+    '</div>'+
+    '<div class="detail">'+
+      '<div><div class="sec-title">Headers</div><div class="kv">'+hdrs+'</div></div>'+
+      '<div>'+
+        (e.body?'<div class="sec-title">Body</div><div class="pre">'+esc(e.body)+'</div>':'')+
+        (qpHtml?'<div class="sec-title" style="'+(e.body?'margin-top:10px':'')+'">Query Params</div><div class="kv">'+qpHtml+'</div>':'')+
+        (e.extra_path?'<div class="sec-title" style="margin-top:10px">Extra Path</div><div class="pre">'+esc(e.extra_path)+'</div>':'')+
+      '</div>'+
+    '</div>';
+  row.querySelector('.row-head').addEventListener('click',()=>row.classList.toggle('open'));
+  return row;
 }
 
-function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s || '';
-  return d.innerHTML;
-}
-
-const SKIP_HEADERS = new Set(['cdn-loop','cf-ew-via','cf-ray','cf-visitor','cf-warp-tag-id','cf-worker','connection','upgrade-insecure-requests','sec-ch-ua','sec-ch-ua-mobile','sec-ch-ua-platform','sec-fetch-dest','sec-fetch-mode','sec-fetch-site','sec-fetch-user','sec-gpc','priority','accept-encoding','cache-control']);
-
-function renderHeaders(hdrs) {
-  if (!hdrs || typeof hdrs !== 'object') return '<span style="color:#484f58">none</span>';
-  let html = '';
-  for (const [k,v] of Object.entries(hdrs)) {
-    if (SKIP_HEADERS.has(k.toLowerCase())) continue;
-    html += '<div class="k">'+esc(k)+'</div><div class="v">'+esc(v)+'</div>';
-  }
-  return html || '<span style="color:#484f58">none (all filtered)</span>';
-}
-
-function renderQP(qp) {
-  if (!qp || Object.keys(qp).length === 0) return '';
-  let html = '';
-  for (const [k,v] of Object.entries(qp)) {
-    html += '<div class="k">'+esc(k)+'</div><div class="v qp">'+esc(v)+'</div>';
-  }
-  return html;
-}
-
-function matchesFilter(e) {
-  const fk = filterKey.value.toLowerCase();
-  const ft = filterToken.value.toLowerCase();
-  const fi = filterIp.value.toLowerCase();
-  if (fk && !e.key.toLowerCase().includes(fk)) return false;
-  if (ft && !e.token.toLowerCase().includes(ft)) return false;
-  if (fi && !e.source_ip.toLowerCase().includes(fi)) return false;
+function matchesFilter(e){
+  const fk=filterKey.value.toLowerCase(),ft=filterToken.value.toLowerCase(),fi=filterIp.value.toLowerCase();
+  if(fk&&!e.key.toLowerCase().includes(fk))return false;
+  if(ft&&!e.token.toLowerCase().includes(ft))return false;
+  if(fi&&!e.source_ip.toLowerCase().includes(fi))return false;
   return true;
 }
-
-function buildCard(entry, fresh) {
-  const card = document.createElement('div');
-  card.className = 'card' + (fresh ? ' fresh' : '');
-  const qpStr = entry.query_params && Object.keys(entry.query_params).length
-    ? '?' + Object.entries(entry.query_params).map(([k,v])=>k+'='+v).join('&') : '';
-  card.innerHTML =
-    '<div class="card-head">' +
-      '<span class="arrow">&#9654;</span>' +
-      '<span class="method method-'+esc(entry.method)+'">'+esc(entry.method)+'</span>' +
-      '<span class="path">'+esc(entry.path + qpStr)+'</span>' +
-      '<div class="meta">' +
-        '<span class="tag tag-key">'+esc(entry.key)+'</span>' +
-        '<span class="tag tag-token">'+esc(entry.token)+'</span>' +
-        '<span class="ip">'+esc(entry.source_ip)+'</span>' +
-        '<span class="ts">'+fmtTime(entry.timestamp)+'</span>' +
-      '</div>' +
-    '</div>' +
-    '<div class="card-body">' +
-      '<div class="section"><div class="section-title">Headers</div><div class="kv-grid">'+renderHeaders(entry.headers)+'</div></div>' +
-      (entry.body ? '<div class="section"><div class="section-title">Body</div><div class="body-content">'+esc(entry.body)+'</div></div>' : '') +
-      (renderQP(entry.query_params) ? '<div class="section"><div class="section-title">Query Params</div><div class="kv-grid">'+renderQP(entry.query_params)+'</div></div>' : '') +
-      (entry.extra_path ? '<div class="section"><div class="section-title">Extra Path</div><div class="body-content">'+esc(entry.extra_path)+'</div></div>' : '') +
-    '</div>';
-  card.querySelector('.card-head').addEventListener('click', () => card.classList.toggle('open'));
-  return card;
+function updateStats(){
+  statTotal.textContent=entries.length.toLocaleString();
+  statKeys.textContent=seenKeys.size.toLocaleString();
+  statTokens.textContent=seenTokens.size.toLocaleString();
+  statIps.textContent=seenIps.size.toLocaleString();
+  statDbTotal.textContent=dbTotal.toLocaleString();
 }
-
-function addEntry(entry) {
-  entries.push(entry);
-  seenKeys.add(entry.key);
-  seenTokens.add(entry.token);
-  seenIps.add(entry.source_ip);
-  statTotal.textContent = entries.length;
-  statKeys.textContent = seenKeys.size;
-  statTokens.textContent = seenTokens.size;
-  statIps.textContent = seenIps.size;
-  if (!matchesFilter(entry)) return;
-  const empty = feed.querySelector('.empty');
-  if (empty) empty.remove();
-  feed.prepend(buildCard(entry, true));
+function track(e){seenKeys.add(e.key);seenTokens.add(e.token);seenIps.add(e.source_ip)}
+function addEntry(e){
+  entries.push(e);track(e);dbTotal++;updateStats();
+  if(!matchesFilter(e))return;
+  const em=feed.querySelector('.empty');if(em)em.remove();
+  feed.prepend(buildRow(e,true));
 }
-
-function rerender() {
-  feed.innerHTML = '';
-  let shown = 0;
-  for (let i = entries.length - 1; i >= 0; i--) {
-    if (matchesFilter(entries[i])) { feed.appendChild(buildCard(entries[i], false)); shown++; }
-  }
-  if (!shown) feed.innerHTML = '<div class="empty">No matching callbacks</div>';
+function rerender(){
+  feed.innerHTML='';let n=0;
+  for(let i=entries.length-1;i>=0;i--){if(matchesFilter(entries[i])){feed.appendChild(buildRow(entries[i],false));n++}}
+  if(!loadedAll){const d=document.createElement('div');d.className='load-row';d.innerHTML='<button>load more</button>';d.querySelector('button').addEventListener('click',loadMore);feed.appendChild(d)}
+  if(!n&&loadedAll)feed.innerHTML='<div class="empty">no callbacks</div>';
 }
+[filterKey,filterToken,filterIp].forEach(el=>el.addEventListener('input',rerender));
+$('btn-clear').addEventListener('click',()=>{entries=[];seenKeys.clear();seenTokens.clear();seenIps.clear();updateStats();feed.innerHTML='<div class="empty">waiting for callbacks...</div>'});
 
-[filterKey, filterToken, filterIp].forEach(el => el.addEventListener('input', rerender));
-
-document.getElementById('btn-clear').addEventListener('click', () => {
-  entries = [];
-  seenKeys.clear(); seenTokens.clear(); seenIps.clear();
-  statTotal.textContent = '0'; statKeys.textContent = '0';
-  statTokens.textContent = '0'; statIps.textContent = '0';
-  feed.innerHTML = '<div class="empty">Waiting for callbacks...</div>';
-});
-
-// WebSocket connection with auto-reconnect
-function connect() {
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const ws = new WebSocket(proto + '//' + location.host + '/api/ws');
-  ws.onopen = () => {
-    connDot.classList.remove('dead');
-    connStatus.textContent = 'connected';
+async function loadHistory(){
+  try{
+    const r=await fetch('/api/callbacks?limit='+PAGE+'&offset=0',{credentials:'same-origin'});
+    if(r.status===401){window.location.href='/login';return}
+    if(!r.ok)return;const data=await r.json();
+    dbTotal=data.total||data.count||0;
+    const items=data.callbacks.reverse();
+    for(const e of items){entries.push(e);track(e)}
+    if(data.count<PAGE)loadedAll=true;
+    updateStats();rerender();
+  }catch(e){console.error(e)}
+}
+async function loadMore(){
+  try{
+    const r=await fetch('/api/callbacks?limit='+PAGE+'&offset='+entries.length,{credentials:'same-origin'});
+    if(!r.ok)return;const data=await r.json();
+    dbTotal=data.total||dbTotal;
+    const items=data.callbacks.reverse();
+    for(const e of items){entries.push(e);track(e)}
+    if(data.count<PAGE)loadedAll=true;
+    updateStats();rerender();
+  }catch(e){console.error(e)}
+}
+function getCookie(n){const m=document.cookie.match('(^|;)\\s*'+n+'=([^;]*)');return m?m[2]:''}
+let _pingInterval=null;
+function connect(){
+  const tok=encodeURIComponent(getCookie('session'));
+  const ws=new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/api/ws?token='+tok);
+  ws.onopen=()=>{
+    connDot.classList.remove('off');connStatus.textContent='live';
+    clearInterval(_pingInterval);
+    _pingInterval=setInterval(()=>{try{ws.send('ping')}catch(_){}},30000);
   };
-  ws.onmessage = (e) => {
-    try { addEntry(JSON.parse(e.data)); } catch(_){}
-  };
-  ws.onclose = () => {
-    connDot.classList.add('dead');
-    connStatus.textContent = 'reconnecting...';
-    setTimeout(connect, 3000);
-  };
-  ws.onerror = () => ws.close();
+  ws.onmessage=e=>{try{addEntry(JSON.parse(e.data))}catch(_){}};
+  ws.onclose=()=>{clearInterval(_pingInterval);connDot.classList.add('off');connStatus.textContent='reconnecting';setTimeout(connect,3000)};
+  ws.onerror=()=>ws.close();
 }
-connect();
+loadHistory().then(()=>connect());
 </script>
 </body>
 </html>"""
 
 
 @app.get("/api/live", response_class=HTMLResponse)
-async def live_dashboard():
+async def live_dashboard(request: Request):
+    if not _get_session_user(request):
+        return RedirectResponse("/login", status_code=302)
     return DASHBOARD_HTML
 
 
