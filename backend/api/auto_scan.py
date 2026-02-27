@@ -814,7 +814,7 @@ async def _phase_ai(
 
     # Build confirmed vulns + coverage from injection results
     from storage.db import get_scan_results_by_workspace
-    scan_rows = await get_scan_results_by_workspace(workspace, limit=1000)
+    scan_rows = await get_scan_results_by_workspace(workspace, limit=1000, brief=False)
     confirmed_vulns, scan_coverage = _prepare_scan_payload(scan_rows)
 
     _state["phase_detail"] = f"Sending {len(endpoints)} endpoints to Claude ({ai_model})..."

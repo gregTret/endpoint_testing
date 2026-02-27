@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from pathlib import Path
 
-from db import init_db, store_callback, get_callbacks, get_all_callbacks, get_callback_count, delete_callbacks, verify_user, get_ip_summary, get_ip_detail
+from db import init_db, store_callback, get_callbacks, get_all_callbacks, get_callback_count, delete_callbacks, verify_user, get_ip_summary, get_ip_detail, get_excluded_ips, add_excluded_ip, remove_excluded_ip
 
 # --- Country lookup ---
 
@@ -239,10 +239,15 @@ async def list_all_callbacks(
     request: Request,
     limit: int = Query(500, ge=1, le=50000),
     offset: int = Query(0, ge=0),
+    exclude: bool = Query(True),
 ):
     _require_session(request)
-    results = await get_all_callbacks(limit=limit, offset=offset)
-    total = await get_callback_count()
+    exc_ips = None
+    if exclude:
+        exc_list = await get_excluded_ips()
+        exc_ips = [e["ip"] for e in exc_list] if exc_list else None
+    results = await get_all_callbacks(limit=limit, offset=offset, exclude_ips=exc_ips)
+    total = await get_callback_count(exclude_ips=exc_ips)
     return {"count": len(results), "total": total, "callbacks": results}
 
 
@@ -287,6 +292,37 @@ async def get_ip_info(
     _require_session(request)
     result = await get_ip_detail(ip, limit=limit, offset=offset)
     return result
+
+
+# --- IP Exclusion API ---
+
+
+@app.get("/api/excluded-ips")
+async def list_excluded_ips(request: Request):
+    _require_session(request)
+    ips = await get_excluded_ips()
+    return {"count": len(ips), "ips": ips}
+
+
+@app.post("/api/excluded-ips")
+async def create_excluded_ip(request: Request):
+    _require_session(request)
+    body = await request.json()
+    ip = body.get("ip", "").strip()
+    if not ip:
+        raise HTTPException(status_code=400, detail="ip is required")
+    reason = body.get("reason", "")
+    added = await add_excluded_ip(ip, reason)
+    return {"status": "added" if added else "already_excluded", "ip": ip}
+
+
+@app.delete("/api/excluded-ips/{ip}")
+async def delete_excluded_ip(request: Request, ip: str):
+    _require_session(request)
+    removed = await remove_excluded_ip(ip)
+    if not removed:
+        raise HTTPException(status_code=404, detail="IP not in exclusion list")
+    return {"status": "removed", "ip": ip}
 
 
 # --- Live WebSocket + Dashboard ---
@@ -405,6 +441,36 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .load-row{text-align:center;padding:12px}
   .load-row button{background:none;border:1px solid var(--gray-4);color:var(--gray-9);padding:6px 20px;border-radius:4px;font-size:12px;cursor:pointer;transition:all .15s}
   .load-row button:hover{border-color:var(--gray-6);color:var(--gray-11)}
+
+  /* exclusion controls */
+  .exc-toggle{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--gray-9);cursor:pointer;user-select:none;white-space:nowrap}
+  .exc-toggle input{accent-color:var(--red-9);cursor:pointer}
+  .exc-btn{background:none;border:1px solid var(--gray-4);color:var(--gray-9);padding:4px 10px;border-radius:4px;font-size:11px;cursor:pointer;transition:all .15s;white-space:nowrap;position:relative}
+  .exc-btn:hover{border-color:var(--gray-6);color:var(--gray-11)}
+  .exc-badge{background:var(--red-9);color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:8px;margin-left:4px;min-width:16px;text-align:center;display:inline-block}
+  .exc-x{background:none;border:none;color:var(--gray-6);font-size:13px;cursor:pointer;padding:0 2px;margin-left:2px;line-height:1;transition:color .15s;font-weight:700}
+  .exc-x:hover{color:var(--red-9)}
+
+  /* exclusion panel */
+  .exc-panel{display:none;position:absolute;top:100%;right:0;margin-top:6px;background:var(--gray-2);border:1px solid var(--gray-4);border-radius:6px;width:340px;max-height:400px;overflow:auto;z-index:20;box-shadow:0 4px 16px rgba(0,0,0,.3)}
+  .exc-panel.open{display:block}
+  .exc-panel-head{padding:10px 12px;border-bottom:1px solid var(--gray-3);display:flex;align-items:center;gap:8px}
+  .exc-panel-head input{flex:1;background:var(--gray-1);border:1px solid var(--gray-4);color:var(--gray-12);padding:5px 8px;border-radius:4px;font-size:12px;outline:none}
+  .exc-panel-head input::placeholder{color:var(--gray-7)}
+  .exc-panel-head button{background:var(--red-3);border:1px solid var(--red-6);color:var(--red-11);padding:5px 10px;border-radius:4px;font-size:11px;cursor:pointer;white-space:nowrap}
+  .exc-panel-head button:hover{background:var(--red-4)}
+  .exc-list{padding:4px 0}
+  .exc-item{display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:12px;border-bottom:1px solid var(--gray-3)}
+  .exc-item:last-child{border-bottom:none}
+  .exc-item .ip{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--gray-12);flex:1}
+  .exc-item .reason{font-size:11px;color:var(--gray-7);max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .exc-item .rm{background:none;border:none;color:var(--gray-6);cursor:pointer;font-size:11px;padding:2px 6px;border-radius:3px;transition:all .15s}
+  .exc-item .rm:hover{background:var(--red-3);color:var(--red-11)}
+  .exc-empty{padding:16px 12px;text-align:center;color:var(--gray-7);font-size:12px}
+
+  /* toast */
+  .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--gray-2);border:1px solid var(--gray-4);color:var(--gray-11);padding:8px 16px;border-radius:6px;font-size:12px;z-index:100;opacity:0;transition:opacity .2s;pointer-events:none}
+  .toast.show{opacity:1}
 </style>
 </head>
 <body class="dark">
@@ -416,9 +482,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <input type="text" id="filter-key" placeholder="key">
   <input type="text" id="filter-token" placeholder="token">
   <input type="text" id="filter-ip" placeholder="ip">
+  <label class="exc-toggle"><input type="checkbox" id="exc-toggle" checked> Hide excluded</label>
+  <span style="position:relative">
+    <button class="exc-btn" id="exc-manage-btn">Exclusions <span class="exc-badge" id="exc-count">0</span></button>
+    <div class="exc-panel" id="exc-panel">
+      <div class="exc-panel-head">
+        <input type="text" id="exc-add-input" placeholder="Add IP to exclude...">
+        <button id="exc-add-btn">Exclude</button>
+      </div>
+      <div class="exc-list" id="exc-list"></div>
+    </div>
+  </span>
   <button class="del" id="btn-clear">clear</button>
   <a href="/logout">logout</a>
 </div>
+<div class="toast" id="toast"></div>
 <div class="stats">
   <div class="stat"><div class="stat-label">Loaded</div><div class="stat-val" id="stat-total">0</div></div>
   <div class="stat"><div class="stat-label">In DB</div><div class="stat-val" id="stat-db-total">--</div></div>
@@ -433,6 +511,7 @@ const $=id=>document.getElementById(id);
 const feed=$('feed'),statTotal=$('stat-total'),statKeys=$('stat-keys'),statTokens=$('stat-tokens'),statIps=$('stat-ips'),statDbTotal=$('stat-db-total');
 const filterKey=$('filter-key'),filterToken=$('filter-token'),filterIp=$('filter-ip'),connDot=$('conn-dot'),connStatus=$('conn-status');
 let entries=[];const seenKeys=new Set,seenTokens=new Set,seenIps=new Set;const PAGE=500;let loadedAll=false,dbTotal=0;
+const excludedIps=new Set;let hideExcluded=true;
 
 function fmtTime(ts){const d=new Date(ts*1000);return d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})+'.'+String(d.getMilliseconds()).padStart(3,'0')}
 function fmtDate(ts){const d=new Date(ts*1000);return d.toLocaleDateString('en-GB',{day:'2-digit',month:'short'})}
@@ -462,6 +541,7 @@ function buildRow(e,fresh){
         '<span class="tag tag-k">'+esc(e.key)+'</span>'+
         '<span class="tag tag-t">'+esc(e.token)+'</span>'+
         '<a href="/api/ip-detail/'+encodeURIComponent(e.source_ip)+'" class="ip" onclick="event.stopPropagation()" title="View IP details">'+esc(e.source_ip)+'</a>'+
+        '<button class="exc-x" data-ip="'+esc(e.source_ip)+'" onclick="event.stopPropagation();excludeIp(this.dataset.ip)" title="Exclude this IP">&times;</button>'+
         '<span class="ts">'+fmtDate(e.timestamp)+' '+fmtTime(e.timestamp)+'</span>'+
       '</div>'+
     '</div>'+
@@ -478,6 +558,7 @@ function buildRow(e,fresh){
 }
 
 function matchesFilter(e){
+  if(hideExcluded&&excludedIps.has(e.source_ip))return false;
   const fk=filterKey.value.toLowerCase(),ft=filterToken.value.toLowerCase(),fi=filterIp.value.toLowerCase();
   if(fk&&!e.key.toLowerCase().includes(fk))return false;
   if(ft&&!e.token.toLowerCase().includes(ft))return false;
@@ -494,6 +575,7 @@ function updateStats(){
 }
 function track(e){seenKeys.add(e.key);seenTokens.add(e.token);if(!seenIps.has(e.source_ip)){seenIps.add(e.source_ip);_trueIpCount=Math.max(_trueIpCount,seenIps.size)}}
 function addEntry(e){
+  if(hideExcluded&&excludedIps.has(e.source_ip))return;
   entries.push(e);track(e);dbTotal++;updateStats();
   if(!matchesFilter(e))return;
   const em=feed.querySelector('.empty');if(em)em.remove();
@@ -508,13 +590,17 @@ function rerender(){
 [filterKey,filterToken,filterIp].forEach(el=>el.addEventListener('input',rerender));
 $('btn-clear').addEventListener('click',()=>{entries=[];seenKeys.clear();seenTokens.clear();seenIps.clear();updateStats();feed.innerHTML='<div class="empty">waiting for callbacks...</div>'});
 
+function cbUrl(){return '/api/callbacks?limit='+PAGE+'&offset=0&exclude='+hideExcluded}
+
 async function loadHistory(){
   try{
-    const [r,ipR]=await Promise.all([
-      fetch('/api/callbacks?limit='+PAGE+'&offset=0',{credentials:'same-origin'}),
-      fetch('/api/ips',{credentials:'same-origin'})
+    const [r,ipR,excR]=await Promise.all([
+      fetch(cbUrl(),{credentials:'same-origin'}),
+      fetch('/api/ips',{credentials:'same-origin'}),
+      fetch('/api/excluded-ips',{credentials:'same-origin'})
     ]);
     if(r.status===401){window.location.href='/login';return}
+    if(excR.ok){const excData=await excR.json();excludedIps.clear();for(const e of (excData.ips||[]))excludedIps.add(e.ip);renderExcPanel();updateExcCount()}
     if(!r.ok)return;const data=await r.json();
     dbTotal=data.total||data.count||0;
     const items=data.callbacks.reverse();
@@ -526,7 +612,7 @@ async function loadHistory(){
 }
 async function loadMore(){
   try{
-    const r=await fetch('/api/callbacks?limit='+PAGE+'&offset='+entries.length,{credentials:'same-origin'});
+    const r=await fetch('/api/callbacks?limit='+PAGE+'&offset='+entries.length+'&exclude='+hideExcluded,{credentials:'same-origin'});
     if(!r.ok)return;const data=await r.json();
     dbTotal=data.total||dbTotal;
     const items=data.callbacks.reverse();
@@ -535,6 +621,63 @@ async function loadMore(){
     updateStats();rerender();
   }catch(e){console.error(e)}
 }
+
+// --- Exclusion logic ---
+function showToast(msg){const t=$('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2000)}
+function updateExcCount(){$('exc-count').textContent=excludedIps.size;$('exc-count').style.display=excludedIps.size?'':'none'}
+
+async function excludeIp(ip){
+  try{
+    const r=await fetch('/api/excluded-ips',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip})});
+    if(!r.ok)return;
+    excludedIps.add(ip);updateExcCount();renderExcPanel();showToast('Excluded '+ip);
+    if(hideExcluded){entries=[];seenKeys.clear();seenTokens.clear();seenIps.clear();loadedAll=false;loadHistory()}
+    else rerender();
+  }catch(e){console.error(e)}
+}
+
+async function unexcludeIp(ip){
+  try{
+    const r=await fetch('/api/excluded-ips/'+encodeURIComponent(ip),{method:'DELETE',credentials:'same-origin'});
+    if(!r.ok)return;
+    excludedIps.delete(ip);updateExcCount();renderExcPanel();showToast('Removed exclusion for '+ip);
+    if(hideExcluded){entries=[];seenKeys.clear();seenTokens.clear();seenIps.clear();loadedAll=false;loadHistory()}
+    else rerender();
+  }catch(e){console.error(e)}
+}
+
+function renderExcPanel(){
+  const list=$('exc-list');
+  if(!excludedIps.size){list.innerHTML='<div class="exc-empty">No excluded IPs</div>';return}
+  list.innerHTML='';
+  for(const ip of excludedIps){
+    const item=document.createElement('div');item.className='exc-item';
+    item.innerHTML='<span class="ip">'+esc(ip)+'</span><button class="rm" data-ip="'+esc(ip)+'">remove</button>';
+    item.querySelector('.rm').addEventListener('click',function(){unexcludeIp(this.dataset.ip)});
+    list.appendChild(item);
+  }
+}
+
+// Toggle
+$('exc-toggle').addEventListener('change',function(){
+  hideExcluded=this.checked;
+  entries=[];seenKeys.clear();seenTokens.clear();seenIps.clear();loadedAll=false;
+  loadHistory();
+});
+
+// Manage panel toggle
+$('exc-manage-btn').addEventListener('click',function(e){
+  e.stopPropagation();$('exc-panel').classList.toggle('open');
+});
+document.addEventListener('click',function(e){if(!$('exc-panel').contains(e.target)&&e.target!==$('exc-manage-btn'))$('exc-panel').classList.remove('open')});
+
+// Manual add
+$('exc-add-btn').addEventListener('click',function(){
+  const inp=$('exc-add-input');const ip=inp.value.trim();
+  if(!ip)return;inp.value='';excludeIp(ip);
+});
+$('exc-add-input').addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();$('exc-add-btn').click()}});
+
 function getCookie(n){const m=document.cookie.match('(^|;)\\s*'+n+'=([^;]*)');return m?m[2]:''}
 let _pingInterval=null;
 function connect(){

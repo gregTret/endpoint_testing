@@ -8,7 +8,7 @@
 var PayloadEditor = (function () {
     const API = 'http://127.0.0.1:8000/api';
 
-    const CONFIGURABLE = ['sql', 'xss', 'cmd', 'traversal', 'ssti', 'mongo', 'aql'];
+    const CONFIGURABLE = ['sql', 'xss', 'cmd', 'traversal', 'ssti', 'mongo', 'aql', 'python'];
 
     const LABELS = {
         sql: 'SQL Injection',
@@ -18,6 +18,7 @@ var PayloadEditor = (function () {
         ssti: 'Server-Side Template Injection',
         mongo: 'MongoDB Injection',
         aql: 'AQL Injection',
+        python: 'Python Injection',
     };
 
     // Current editor state
@@ -78,7 +79,22 @@ var PayloadEditor = (function () {
 
     async function refresh() {
         if (!$list) return;
-        $list.innerHTML = CONFIGURABLE.map(type => {
+
+        // Fetch enabled injector types to filter the list
+        let enabledTypes = null;
+        try {
+            const r = await fetch(`${API}/settings/injector-types`);
+            if (r.ok) {
+                const d = await r.json();
+                enabledTypes = new Set(d.enabled_types || []);
+            }
+        } catch (_) {}
+
+        const visibleTypes = enabledTypes
+            ? CONFIGURABLE.filter(t => enabledTypes.has(t))
+            : CONFIGURABLE;
+
+        $list.innerHTML = visibleTypes.map(type => {
             return `<div class="injector-payload-row" data-type="${type}">
                 <div class="injector-payload-info">
                     <span class="injector-payload-name">${LABELS[type] || type}</span>
@@ -95,7 +111,7 @@ var PayloadEditor = (function () {
         });
 
         // Fetch counts in background
-        for (const type of CONFIGURABLE) {
+        for (const type of visibleTypes) {
             _fetchPayloadInfo(type);
         }
     }

@@ -137,6 +137,9 @@
         // Default request headers
         initDefaultHeaders();
 
+        // Injector types enable/disable
+        initInjectorTypesSettings();
+
         // Export modal
         initExportModal();
 
@@ -145,6 +148,25 @@
 
         // Detail panel vertical resize
         initDetailResize();
+
+        // ── Delegated tab-bar click handler (robust backup for tab switching) ──
+        const tabBar = document.getElementById('tab-bar');
+        tabBar.addEventListener('click', (ev) => {
+            const btn = ev.target.closest('.tab');
+            console.log('[tab-bar click]', ev.target.tagName, btn?.dataset?.tab);
+            if (!btn || !btn.dataset.tab) return;
+            switchTab(btn.dataset.tab);
+        });
+
+        // ── Diagnostic: detect clicks in the tab-bar x-range that miss the bar ──
+        document.getElementById('tool-panel').addEventListener('click', (ev) => {
+            if (ev.clientX < 50) {
+                const hit = document.elementFromPoint(ev.clientX, ev.clientY);
+                console.log('[tool-panel left-edge click]', ev.clientX, ev.clientY,
+                    'target:', ev.target.tagName, ev.target.id || ev.target.className,
+                    'elementFromPoint:', hit?.tagName, hit?.id || hit?.className);
+            }
+        }, true); // capture phase — fires even if something stops propagation
     }
 
     /** Clear current UI data and reload from the active workspace */
@@ -163,6 +185,7 @@
         if (PayloadEditor.refresh) PayloadEditor.refresh();
         if (window._reloadOobSettings) window._reloadOobSettings();
         if (window._reloadDefaultHeaders) window._reloadDefaultHeaders();
+        if (window._reloadInjectorTypesSettings) window._reloadInjectorTypesSettings();
     }
 
     // ── Tab Config ──────────────────────────────────────────────────
@@ -409,6 +432,7 @@
     // ── Tab switching ──────────────────────────────────────────────
 
     function switchTab(tabName) {
+        console.log('[switchTab]', tabName);
         document.querySelectorAll('#tab-bar .tab').forEach(t => {
             t.classList.toggle('active', t.dataset.tab === tabName);
         });
@@ -422,6 +446,20 @@
         if (tabName === 'ai' && AutoScan.refresh) AutoScan.refresh();
         if (tabName === 'info') refreshInfoTab();
     }
+
+    // ── Keyboard shortcuts for tab switching (Ctrl+1..9) ────────────
+    document.addEventListener('keydown', (e) => {
+        if (!e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) return;
+        const num = parseInt(e.key, 10);
+        if (num >= 1 && num <= 9) {
+            const visibleTabs = tabConfig.filter(t => t.visible);
+            const idx = num - 1;
+            if (idx < visibleTabs.length) {
+                e.preventDefault();
+                switchTab(visibleTabs[idx].id);
+            }
+        }
+    });
 
     // ── Panel resize ────────────────────────────────────────────────
 
@@ -722,6 +760,99 @@
 
     function _escAttr(s) {
         return (s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // ── Injector Types (enable/disable) ─────────────────────────────
+
+    const INJECTOR_TYPE_LABELS = {
+        quick: 'Quick Scan',
+        sql: 'SQL Injection',
+        aql: 'AQL Injection',
+        xss: 'Cross-Site Scripting',
+        mongo: 'MongoDB Injection',
+        jwt: 'JWT',
+        ssti: 'SSTI',
+        cmd: 'Command Injection',
+        traversal: 'Path Traversal',
+        python: 'Python Injection',
+        upload: 'Upload',
+    };
+
+    function initInjectorTypesSettings() {
+        const container = document.getElementById('injector-types-config');
+        const saveBtn   = document.getElementById('btn-save-injector-types');
+        const statusLbl = document.getElementById('injector-types-status');
+        if (!container) return;
+
+        function renderCheckboxes(allTypes, enabledTypes) {
+            const enabledSet = new Set(enabledTypes);
+            container.innerHTML = allTypes.map(t => {
+                const label = INJECTOR_TYPE_LABELS[t] || t;
+                const checked = enabledSet.has(t) ? 'checked' : '';
+                return `<label><input type="checkbox" value="${t}" ${checked}> ${label}</label>`;
+            }).join('');
+        }
+
+        function getChecked() {
+            return Array.from(container.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value);
+        }
+
+        function loadSettings() {
+            fetch(`${API}/settings/injector-types`)
+                .then(r => r.json())
+                .then(data => {
+                    renderCheckboxes(data.all_types || [], data.enabled_types || []);
+                    _applyInjectorTypeFilter();
+                })
+                .catch(() => {});
+        }
+        loadSettings();
+
+        window._reloadInjectorTypesSettings = function () {
+            loadSettings();
+            _applyInjectorTypeFilter();
+        };
+
+        saveBtn.addEventListener('click', () => {
+            const enabled = getChecked();
+            fetch(`${API}/settings/injector-types`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled_types: enabled }),
+            })
+            .then(r => r.json())
+            .then(() => {
+                statusLbl.textContent = 'Saved';
+                statusLbl.style.color = 'var(--success)';
+                _applyInjectorTypeFilter();
+                if (PayloadEditor.refresh) PayloadEditor.refresh();
+            })
+            .catch(() => { statusLbl.textContent = 'Save failed'; statusLbl.style.color = 'var(--danger)'; });
+        });
+    }
+
+    /** Hide/show options in #inject-type dropdown based on enabled injector types */
+    function _applyInjectorTypeFilter() {
+        fetch(`${API}/settings/injector-types`)
+            .then(r => r.json())
+            .then(data => {
+                const enabled = new Set(data.enabled_types || []);
+                const select = document.getElementById('inject-type');
+                if (!select) return;
+                let selectedHidden = false;
+                Array.from(select.options).forEach(opt => {
+                    const hidden = !enabled.has(opt.value);
+                    opt.hidden = hidden;
+                    opt.disabled = hidden;
+                    if (hidden && opt.selected) selectedHidden = true;
+                });
+                // Fall back to first visible option if current selection was disabled
+                if (selectedHidden) {
+                    const first = Array.from(select.options).find(o => !o.hidden);
+                    if (first) select.value = first.value;
+                }
+            })
+            .catch(() => {});
     }
 
     // ── Export Modal ────────────────────────────────────────────────

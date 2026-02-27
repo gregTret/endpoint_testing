@@ -14,6 +14,17 @@ window.InjectorUI = (() => {
     let bulkUrlsEl = null;
     let bulkMode = false;
 
+    // Upload scanner state
+    let uploadConfigEl, uploadSourceBadge, uploadLogIdEl, uploadCategoriesEl;
+    const UPLOAD_CATEGORIES = [
+        "Extension Bypass", "MIME Mismatch", "Polyglot", "SVG",
+        "SVG (React/Flask)", "Path Traversal", "Filename Injection",
+        "Webshell", "Out-of-Band", "Python Execution", "Edge Cases",
+    ];
+
+    // ── Debug helper (console only, no overlay) ──
+    function _dbg(msg) { console.log(msg); }
+
     function init() {
         urlEl      = document.getElementById('inject-url');
         methodEl   = document.getElementById('inject-method');
@@ -110,6 +121,71 @@ window.InjectorUI = (() => {
             label: 'Injector',
             receive(data) { loadFromLog(data); },
         });
+
+        // ── Upload scanner setup ──────────────────────────────
+        uploadConfigEl = document.getElementById('upload-config');
+        uploadSourceBadge = document.getElementById('upload-source-badge');
+        uploadLogIdEl = document.getElementById('upload-log-id');
+        uploadCategoriesEl = document.getElementById('upload-categories');
+
+        // Populate category checkboxes
+        uploadCategoriesEl.innerHTML = UPLOAD_CATEGORIES.map(cat =>
+            `<label><input type="checkbox" value="${esc(cat)}" checked> ${esc(cat)}</label>`
+        ).join('');
+
+        // Show/hide upload config when injector type changes
+        typeEl.addEventListener('change', _onTypeChange);
+
+        // Register SendTo target for upload scanner
+        SendTo.register('upload-scanner', {
+            label: 'Upload Scanner',
+            tab: 'injector',
+            receive(data) {
+                // Accept both multipart uploads and JSON-based upload flows.
+                // Use REQUEST content-type from headers (not response content_type).
+                const reqHeaders = data.request_headers || data.headers || {};
+                const headerCt = Object.entries(reqHeaders).find(
+                    ([k]) => k.toLowerCase() === 'content-type'
+                );
+                const requestCt = headerCt ? headerCt[1].toLowerCase() : '';
+                const isMultipart = requestCt.includes('multipart/form-data');
+                const isJson = requestCt.includes('json');
+                if (!isMultipart && !isJson) {
+                    alert('This request is not a file upload (multipart) or upload initiation (JSON). Select an appropriate request.');
+                    return;
+                }
+                // Switch to upload type
+                typeEl.value = 'upload';
+                _onTypeChange();
+                // Set log_id and source badge
+                uploadLogIdEl.value = data.id || '';
+                const modeLabel = isMultipart ? 'multipart' : 'json flow';
+                uploadSourceBadge.innerHTML =
+                    `<strong>Source:</strong> ${esc(data.method || 'POST')} ${esc(data.url || '')} ` +
+                    `<span style="color:var(--accent)">(Log #${data.id || '?'} — ${modeLabel})</span>`;
+                // Also populate the URL field for display
+                urlEl.value = data.url || '';
+                methodEl.value = data.method || 'POST';
+            },
+        });
+    }
+
+    /** Toggle visibility of upload-specific vs standard fields */
+    function _onTypeChange() {
+        const isUpload = typeEl.value === 'upload';
+        // Hide standard fields when upload is selected
+        const standardFields = [
+            paramsEl, headersEl, bodyEl,
+        ];
+        standardFields.forEach(el => {
+            if (el) el.closest('.form-group').style.display = isUpload ? 'none' : '';
+        });
+        // Hide injection points and key picker for upload
+        const injPointsGroup = document.getElementById('injection-points')?.closest('.form-group');
+        if (injPointsGroup) injPointsGroup.style.display = isUpload ? 'none' : '';
+        if (keyPickerGroup) keyPickerGroup.style.display = isUpload ? 'none' : keyPickerGroup.style.display;
+        // Show/hide upload config
+        if (uploadConfigEl) uploadConfigEl.classList.toggle('hidden', !isUpload);
     }
 
     async function loadHistory() {
@@ -127,6 +203,10 @@ window.InjectorUI = (() => {
         if (paramsEl) paramsEl.value = '';
         if (headersEl) headersEl.value = '';
         if (bodyEl) bodyEl.value = '';
+        // Clear upload scanner state so stale log_ids don't leak across workspaces
+        if (uploadLogIdEl) uploadLogIdEl.value = '';
+        if (uploadSourceBadge) uploadSourceBadge.innerHTML =
+            'No source request loaded. Right-click a file upload request (multipart or JSON upload initiation) in the Logs tab \u2192 "Send to Upload Scanner".';
         if (bulkUrlsEl) bulkUrlsEl.value = '';
         bulkMode = false;
         const bulkSection = document.getElementById('bulk-url-section');
@@ -138,11 +218,17 @@ window.InjectorUI = (() => {
         if (scanToolbar) scanToolbar.classList.add('hidden');
 
         try {
+            _dbg('[loadHistory] fetching...');
+            const t0 = performance.now();
             const res = await fetch(`${API}/scan/history`);
-            const data = await res.json();
+            const raw = await res.text();
+            _dbg(`[loadHistory] ${(performance.now() - t0).toFixed(0)}ms, ${(raw.length / 1024).toFixed(0)}KB`);
+            const data = JSON.parse(raw);
+            _dbg(`[loadHistory] ${data.length} results parsed`);
             lastResults = data;
             renderResults(lastResults);
-        } catch (_) {
+        } catch (err) {
+            _dbg(`[loadHistory] ERROR: ${err.message}`);
             renderResults([]);
         }
     }
@@ -212,6 +298,34 @@ ${EPTUtils.bodyPreBlock(data.body || '')}
 
     /** Build a scan config from the current form state */
     function _buildScanConfig(targetUrl) {
+        // Upload scanner uses a different config shape
+        if (typeEl.value === 'upload') {
+            const logId = parseInt(uploadLogIdEl.value, 10);
+            if (!logId) {
+                alert('No source request loaded. Right-click a file upload request in the Logs tab → "Send to Upload Scanner".');
+                return null;
+            }
+            const selectedCats = [];
+            uploadCategoriesEl.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
+                selectedCats.push(cb.value);
+            });
+            return {
+                target_url: targetUrl || urlEl.value || '(upload)',
+                method: methodEl.value,
+                injector_type: 'upload',
+                params: {},
+                headers: {},
+                body: '',
+                injection_points: [],
+                target_keys: null,
+                timeout: 30.0,
+                extra: {
+                    log_id: logId,
+                    categories: selectedCats.length < UPLOAD_CATEGORIES.length ? selectedCats : null,
+                },
+            };
+        }
+
         const points = [];
         document.querySelectorAll('#injection-points input:checked')
             .forEach(cb => points.push(cb.value));
@@ -267,6 +381,13 @@ ${EPTUtils.bodyPreBlock(data.body || '')}
             }
 
             const config = _buildScanConfig(urls[idx]);
+            if (!config) {
+                scanBtn.disabled = false;
+                scanBtn.textContent = 'Launch Scan';
+                pauseBtn.classList.add('hidden');
+                stopBtn.classList.add('hidden');
+                return;
+            }
 
             try {
                 const resp = await fetch(`${API}/scan`, {
@@ -345,6 +466,7 @@ ${EPTUtils.bodyPreBlock(data.body || '')}
 
     let lastResults = [];
     let activeFilter = 'all';
+    let renderCap = 50; // only render this many results at a time to prevent freezes
     const expandedSet = new Set(); // track expanded result indices across re-renders
 
     function getVisibleResults() {
@@ -367,6 +489,22 @@ ${EPTUtils.bodyPreBlock(data.body || '')}
 
     function renderResults(results) {
         if (results !== lastResults) {
+            // Preserve any lazily-loaded detail data from previous results
+            if (lastResults.length && results.length) {
+                const oldById = {};
+                for (const r of lastResults) {
+                    if (r._detailLoaded && r.id) oldById[r.id] = r;
+                }
+                for (const r of results) {
+                    const prev = r.id && oldById[r.id];
+                    if (prev) {
+                        r._detailLoaded = true;
+                        r.response_body = prev.response_body;
+                        r.request_headers = prev.request_headers;
+                        r.request_body = prev.request_body;
+                    }
+                }
+            }
             lastResults = results;
         }
 
@@ -391,7 +529,11 @@ ${EPTUtils.bodyPreBlock(data.body || '')}
             </span>
         </div>`;
 
-        const rows = filtered.map((r, i) => {
+        // Cap rendered items to prevent main-thread freeze
+        const capped = filtered.slice(0, renderCap);
+        const hasMore = filtered.length > renderCap;
+
+        const rows = capped.map((r, i) => {
             const cls = r.is_vulnerable ? 'scan-vuln' : 'scan-safe';
             const confCls = `confidence-${r.confidence}`;
             const key = r.id || `${r.payload}_${r.original_param}_${i}`;
@@ -399,7 +541,8 @@ ${EPTUtils.bodyPreBlock(data.body || '')}
             const isOob = (r.injector_type || '').startsWith('oob:');
             const oobBadge = isOob && r.is_vulnerable ? '<span class="oob-badge">OOB Confirmed</span>' : '';
             const oobTypeBadge = isOob ? `<span class="scan-badge">${esc(r.injector_type)}</span>` : '';
-            return `<div class="scan-entry ${cls}" data-key="${esc(String(key))}">` +
+            const detailContent = isOpen ? _buildDetailHtml(r) : '';
+            return `<div class="scan-entry ${cls}" data-key="${esc(String(key))}" data-idx="${i}">` +
 `<div class="scan-header">` +
 `<span class="scan-payload" title="${esc(r.payload)}">${esc(r.payload)}</span>` +
 oobBadge + oobTypeBadge +
@@ -410,56 +553,111 @@ oobBadge + oobTypeBadge +
 `</div>` +
 `<div class="scan-details">${esc(r.details)}</div>` +
 `<div class="scan-response-toggle">${isOpen ? '▾ Hide Details' : '▸ Show Details'}</div>` +
-`<div class="scan-response ${isOpen ? '' : 'hidden'}">` +
+`<div class="scan-response ${isOpen ? '' : 'hidden'}">${detailContent}</div>` +
+`</div>`;
+        }).join('');
+
+        const loadMoreBtn = hasMore
+            ? `<button class="btn-small scan-load-more" style="margin:8px auto;display:block">Show more (${filtered.length - renderCap} remaining)</button>`
+            : '';
+
+        const t0 = performance.now();
+        resultsEl.innerHTML = summary + (capped.length ? rows + loadMoreBtn : '<p class="placeholder-text">No matching results</p>');
+        _dbg(`[render] ${filtered.length} total, ${capped.length} shown, ${(performance.now() - t0).toFixed(0)}ms, ${(summary.length + rows.length) / 1024 | 0}KB html`);
+
+        // ── Event delegation — all handlers on container ──
+        // (previous per-element listeners replaced by a single delegated setup)
+        if (!resultsEl._delegated) {
+            resultsEl._delegated = true;
+
+            resultsEl.addEventListener('click', (ev) => {
+                // "Show more" button — increase render cap and re-render
+                if (ev.target.classList.contains('scan-load-more')) {
+                    renderCap += 50;
+                    renderResults(lastResults);
+                    return;
+                }
+                // Filter buttons
+                const filterBtn = ev.target.closest('.scan-filter-btn');
+                if (filterBtn) {
+                    activeFilter = filterBtn.dataset.filter;
+                    renderCap = 50; // reset cap on filter change
+                    renderResults(lastResults);
+                    return;
+                }
+                // Expand/collapse details (lazy-load on first open)
+                const toggle = ev.target.closest('.scan-response-toggle');
+                if (toggle) {
+                    const entry = toggle.closest('.scan-entry');
+                    const key = entry.dataset.key;
+                    const detail = toggle.nextElementSibling;
+                    const open = !detail.classList.contains('hidden');
+                    if (!open && !detail.innerHTML) {
+                        // Lazy-load: render detail content on first expand
+                        const idx = Number(entry.dataset.idx);
+                        const r = getVisibleResults()[idx];
+                        if (r) {
+                            detail.innerHTML = _buildDetailHtml(r);
+                            // Fetch heavy fields if not already loaded
+                            if (!r._detailLoaded) _loadResultDetail(r, detail);
+                        }
+                    }
+                    detail.classList.toggle('hidden');
+                    toggle.textContent = open ? '▸ Show Details' : '▾ Hide Details';
+                    if (open) { expandedSet.delete(key); } else { expandedSet.add(key); }
+                    return;
+                }
+            });
+
+            resultsEl.addEventListener('contextmenu', (ev) => {
+                const el = ev.target.closest('.scan-entry');
+                if (!el) return;
+                ev.preventDefault();
+                const idx = Number(el.dataset.idx);
+                const r = getVisibleResults()[idx];
+                if (r) _showScanCtxMenu(ev.clientX, ev.clientY, r);
+            });
+        }
+    }
+
+    /** Build detail HTML for a scan result. Heavy fields are fetched on demand. */
+    function _buildDetailHtml(r) {
+        const base =
 `<div class="scan-detail-row"><strong>URL:</strong> ${esc(r.target_url)}</div>` +
 `<div class="scan-detail-row"><strong>Point:</strong> [${esc(r.injection_point)}] ${esc(r.original_param)}</div>` +
 `<div class="scan-detail-row"><strong>Payload:</strong> ${esc(r.payload)}</div>` +
-`<div class="scan-detail-row"><strong>Status:</strong> ${r.response_code} &nbsp; <strong>Time:</strong> ${r.response_time_ms}ms</div>` +
+`<div class="scan-detail-row"><strong>Status:</strong> ${r.response_code} &nbsp; <strong>Time:</strong> ${r.response_time_ms}ms</div>`;
+        // If heavy fields are already loaded (from live polling or previous fetch), show them
+        if (r._detailLoaded) {
+            return base +
 `<div class="scan-detail-row"><strong>Request Headers:</strong></div>` +
 EPTUtils.headersBlock(r.request_headers || '') +
 `<div class="scan-detail-row"><strong>Request Body:</strong></div>` +
 EPTUtils.bodyPreBlock(r.request_body || '') +
 `<div class="scan-detail-row"><strong>Response Body:</strong></div>` +
-EPTUtils.bodyPreBlock(r.response_body || '') +
-`</div></div>`;
-        }).join('');
+EPTUtils.bodyPreBlock(r.response_body || '');
+        }
+        // Otherwise return base with a loading placeholder; fetch will fill it in
+        return base + `<div class="scan-detail-loading" data-result-id="${r.id}"><em>Loading details...</em></div>`;
+    }
 
-        resultsEl.innerHTML = summary + (filtered.length ? rows : '<p class="placeholder-text">No matching results</p>');
-
-        // Filter buttons
-        resultsEl.querySelectorAll('.scan-filter-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                activeFilter = btn.dataset.filter;
-                renderResults(lastResults);
-            });
-        });
-
-        // Expand/collapse details — persist state across re-renders
-        resultsEl.querySelectorAll('.scan-response-toggle').forEach(toggle => {
-            toggle.addEventListener('click', () => {
-                const entry = toggle.closest('.scan-entry');
-                const key = entry.dataset.key;
-                const detail = toggle.nextElementSibling;
-                const open = !detail.classList.contains('hidden');
-                detail.classList.toggle('hidden');
-                toggle.textContent = open ? '▸ Show Details' : '▾ Hide Details';
-                if (open) { expandedSet.delete(key); } else { expandedSet.add(key); }
-            });
-        });
-
-        // Right-click context menu on scan entries
-        resultsEl.querySelectorAll('.scan-entry').forEach(el => {
-            el.addEventListener('contextmenu', (ev) => {
-                ev.preventDefault();
-                const key = el.dataset.key;
-                const r = filtered.find((_, i) => {
-                    const k = _.id || `${_.payload}_${_.original_param}_${i}`;
-                    return String(k) === key;
-                });
-                if (!r) return;
-                _showScanCtxMenu(ev.clientX, ev.clientY, r);
-            });
-        });
+    /** Fetch full details for a single scan result and update the expanded view */
+    async function _loadResultDetail(r, detailEl) {
+        if (r._detailLoaded || !r.id) return;
+        try {
+            const resp = await fetch(`${API}/scan/result/${r.id}`);
+            if (!resp.ok) return;
+            const full = await resp.json();
+            r.response_body = full.response_body || '';
+            r.request_headers = full.request_headers || '';
+            r.request_body = full.request_body || '';
+            r._detailLoaded = true;
+            // Re-render the detail content now that we have the full data
+            detailEl.innerHTML = _buildDetailHtml(r);
+        } catch (_) {
+            const placeholder = detailEl.querySelector('.scan-detail-loading');
+            if (placeholder) placeholder.innerHTML = '<em>Failed to load details</em>';
+        }
     }
 
     // ── Key Picker ─────────────────────────────────────────────

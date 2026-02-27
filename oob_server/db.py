@@ -29,6 +29,14 @@ async def init_db():
         await db.execute("CREATE INDEX IF NOT EXISTS idx_key_token ON callbacks (key, token)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_source_ip ON callbacks (source_ip)")
         await db.execute("""
+            CREATE TABLE IF NOT EXISTS excluded_ips (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ip TEXT NOT NULL UNIQUE,
+                reason TEXT DEFAULT '',
+                created_at REAL NOT NULL
+            )
+        """)
+        await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT NOT NULL UNIQUE,
@@ -143,11 +151,18 @@ async def get_callbacks(key: str, token: str | None = None, since: float | None 
             ]
 
 
-async def get_all_callbacks(limit: int = 500, offset: int = 0):
+async def get_all_callbacks(limit: int = 500, offset: int = 0, exclude_ips: list[str] | None = None):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        query = "SELECT * FROM callbacks ORDER BY timestamp DESC LIMIT ? OFFSET ?"
-        async with db.execute(query, (limit, offset)) as cursor:
+        params: list = []
+        where = ""
+        if exclude_ips:
+            placeholders = ",".join("?" for _ in exclude_ips)
+            where = f" WHERE source_ip NOT IN ({placeholders})"
+            params.extend(exclude_ips)
+        query = f"SELECT * FROM callbacks{where} ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        async with db.execute(query, params) as cursor:
             rows = await cursor.fetchall()
             return [
                 {
@@ -167,11 +182,53 @@ async def get_all_callbacks(limit: int = 500, offset: int = 0):
             ]
 
 
-async def get_callback_count() -> int:
+async def get_callback_count(exclude_ips: list[str] | None = None) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT COUNT(*) FROM callbacks") as cursor:
+        params: list = []
+        where = ""
+        if exclude_ips:
+            placeholders = ",".join("?" for _ in exclude_ips)
+            where = f" WHERE source_ip NOT IN ({placeholders})"
+            params.extend(exclude_ips)
+        async with db.execute(f"SELECT COUNT(*) FROM callbacks{where}", params) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else 0
+
+
+async def get_excluded_ips() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM excluded_ips ORDER BY created_at DESC") as cursor:
+            rows = await cursor.fetchall()
+            return [
+                {
+                    "id": row["id"],
+                    "ip": row["ip"],
+                    "reason": row["reason"],
+                    "created_at": row["created_at"],
+                }
+                for row in rows
+            ]
+
+
+async def add_excluded_ip(ip: str, reason: str = "") -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            await db.execute(
+                "INSERT OR IGNORE INTO excluded_ips (ip, reason, created_at) VALUES (?, ?, ?)",
+                (ip, reason, time.time()),
+            )
+            await db.commit()
+            return db.total_changes > 0
+        except Exception:
+            return False
+
+
+async def remove_excluded_ip(ip: str) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM excluded_ips WHERE ip = ?", (ip,))
+        await db.commit()
+        return db.total_changes > 0
 
 
 async def delete_callbacks(key: str):

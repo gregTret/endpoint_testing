@@ -235,6 +235,8 @@
                             <option value="ssti">SSTI</option>
                             <option value="cmd">Command</option>
                             <option value="traversal">Path Traversal</option>
+                            <option value="python">Python</option>
+                            <option value="upload">Upload</option>
                         </select>
                     </div>
                 </div>
@@ -258,6 +260,14 @@
                         <label><input type="checkbox" value="headers"> Headers</label>
                         <label><input type="checkbox" value="body"> Body</label>
                     </div>
+                </div>
+                <div id="upload-config" class="form-group hidden">
+                    <div class="upload-source-badge" id="upload-source-badge" style="margin-bottom:8px;padding:6px 10px;background:var(--surface);border-radius:4px;font-size:13px;color:var(--muted)">
+                        No source request loaded. Right-click a file upload request (multipart or JSON upload initiation) in the Logs tab → "Send to Upload Scanner".
+                    </div>
+                    <input type="hidden" id="upload-log-id" value="">
+                    <label>Preset Categories</label>
+                    <div id="upload-categories" class="checkbox-group"></div>
                 </div>
                 <div class="form-group" id="key-picker-group" style="display:none">
                     <label>Target Keys <span class="hint">(uncheck to exclude from injection)</span></label>
@@ -860,6 +870,19 @@
                             <label><input type="checkbox" value="sqli" checked> Blind SQLi</label>
                         </div>
                         <p style="font-size:11px;color:var(--text-dim);margin-top:4px">Select which blind vulnerability types to test. Fewer categories = faster scans.</p>
+                    </div>
+                </div>
+
+                <!-- Injector Types (enable/disable) -->
+                <div class="settings-section">
+                    <div class="settings-section-title">Injector Types</div>
+                    <p style="font-size:11px;color:var(--text-dim);margin-bottom:8px">Select which injector types appear in the Injector tab dropdown and payload editor.</p>
+                    <div id="injector-types-config" class="checkbox-group" style="flex-direction:column;gap:6px">
+                        <!-- populated by JS -->
+                    </div>
+                    <div class="form-row" style="gap:6px;margin-top:8px;align-items:center">
+                        <button id="btn-save-injector-types" class="btn-primary" style="width:auto;padding:0 16px;height:30px">Save</button>
+                        <span id="injector-types-status" class="status-label"></span>
                     </div>
                 </div>
 
