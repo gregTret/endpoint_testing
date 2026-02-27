@@ -161,6 +161,42 @@ class InterceptAddon:
         except Exception:
             request_body = ""
 
+        # Build multipart metadata from raw bytes (before truncation)
+        multipart_meta = None
+        req_ct = flow.request.headers.get("content-type", "")
+        if "multipart/form-data" in req_ct.lower():
+            try:
+                from proxy.multipart import parse_multipart, extract_boundary
+                boundary = extract_boundary(req_ct)
+                if boundary and flow.request.content:
+                    parts = parse_multipart(req_ct, flow.request.content)
+                    file_field = None
+                    file_parts = []
+                    non_file_fields = {}
+                    for p in parts:
+                        if p.get("filename") is not None:
+                            if file_field is None:
+                                file_field = p["name"]
+                            file_parts.append({
+                                "name": p["name"],
+                                "filename": p["filename"],
+                                "content_type": p.get("content_type", "application/octet-stream"),
+                                "size": p.get("size", 0),
+                            })
+                        else:
+                            text = p.get("content_text", "")
+                            non_file_fields[p["name"]] = text or ""
+                    if file_field:
+                        import json as _json
+                        multipart_meta = _json.dumps({
+                            "file_field": file_field,
+                            "file_parts": file_parts,
+                            "non_file_fields": non_file_fields,
+                            "boundary": boundary,
+                        })
+            except Exception as _mp_err:
+                log.debug("multipart meta extraction failed: %s", _mp_err)
+
         entry = {
             "id": flow.metadata.get("log_id", 0),
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -176,6 +212,7 @@ class InterceptAddon:
             "content_type": flow.response.headers.get("content-type", ""),
             "duration_ms": duration_ms,
             "session_id": self._workspace_getter(),
+            "multipart_meta": multipart_meta,
         }
 
         try:

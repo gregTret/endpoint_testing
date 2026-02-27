@@ -16,6 +16,7 @@ from storage.db import (
     save_scan_result,
     get_scan_results,
     get_scan_results_by_workspace,
+    get_scan_result_detail,
     delete_scan_history_by_workspace,
     save_sitemap_url,
     save_sitemap_urls_bulk,
@@ -70,8 +71,10 @@ def _load_injectors():
     from injectors.ssti_injector import SSTIInjector
     from injectors.cmd_injector import CmdInjector
     from injectors.path_traversal_injector import PathTraversalInjector
+    from injectors.python_injector import PythonInjector
     from injectors.quick_scan_injector import QuickScanInjector
     from injectors.oob_injector import OOBInjector
+    from injectors.upload_injector import UploadInjector
     INJECTORS.update({
         "sql": SQLInjector,
         "aql": AQLInjector,
@@ -81,8 +84,10 @@ def _load_injectors():
         "ssti": SSTIInjector,
         "cmd": CmdInjector,
         "traversal": PathTraversalInjector,
+        "python": PythonInjector,
         "quick": QuickScanInjector,
         "oob": OOBInjector,
+        "upload": UploadInjector,
     })
     _injectors_loaded = True
 
@@ -281,7 +286,7 @@ async def list_injectors():
 # ── Payload Config (per-workspace injector payloads) ────────────────
 
 
-_PAYLOAD_EXCLUDED_TYPES = frozenset({"jwt", "quick", "oob"})
+_PAYLOAD_EXCLUDED_TYPES = frozenset({"jwt", "quick", "oob", "upload"})
 
 
 @router.get("/injectors/{injector_type}/payloads")
@@ -448,6 +453,13 @@ async def start_scan(config: dict, background_tasks: BackgroundTasks):
         raw_types = await get_workspace_setting(_active_workspace, "oob_enabled_types")
         enabled_types = json.loads(raw_types) if raw_types else None
         injector = injector_cls(oob_base_url=oob_url, enabled_types=enabled_types)
+    elif config.injector_type == "upload":
+        oob_url = await get_workspace_setting(_active_workspace, "oob_server_url") or OOB_DEFAULT_URL
+        injector = injector_cls(
+            log_id=config.extra.get("log_id"),
+            categories=config.extra.get("categories"),
+            callback_url=oob_url,
+        )
     else:
         injector = injector_cls()
 
@@ -558,6 +570,15 @@ async def scan_stop():
 @router.get("/scan/results")
 async def scan_results(session_id: str = "default", limit: int = 200):
     return await get_scan_results(session_id, limit)
+
+
+@router.get("/scan/result/{result_id}")
+async def scan_result_detail(result_id: int):
+    """Return full details (incl. response body) for a single scan result."""
+    row = await get_scan_result_detail(result_id)
+    if not row:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return row
 
 
 @router.get("/scan/history")
@@ -909,6 +930,35 @@ async def update_header_settings(data: dict):
         return JSONResponse(status_code=400, content={"error": "headers must be a JSON object"})
     await set_workspace_setting(_active_workspace, "default_headers", json.dumps(headers))
     return {"headers": headers}
+
+
+# ──────────────────────────── Injector Types Settings ──────────────────
+
+
+# All user-facing injector types (excludes internal "quick" and "oob")
+_ALL_INJECTOR_TYPES = ["quick", "sql", "aql", "xss", "mongo", "jwt", "ssti", "cmd", "traversal", "python", "upload"]
+
+
+@router.get("/settings/injector-types")
+async def get_injector_types_settings():
+    raw = await get_workspace_setting(_active_workspace, "injector_enabled_types")
+    if raw:
+        try:
+            enabled = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            enabled = list(_ALL_INJECTOR_TYPES)
+    else:
+        enabled = list(_ALL_INJECTOR_TYPES)
+    return {"enabled_types": enabled, "all_types": _ALL_INJECTOR_TYPES}
+
+
+@router.post("/settings/injector-types")
+async def update_injector_types_settings(data: dict):
+    enabled = data.get("enabled_types")
+    if enabled is None or not isinstance(enabled, list):
+        return JSONResponse(status_code=400, content={"error": "enabled_types must be a list"})
+    await set_workspace_setting(_active_workspace, "injector_enabled_types", json.dumps(enabled))
+    return {"enabled_types": enabled, "all_types": _ALL_INJECTOR_TYPES}
 
 
 # ──────────────────────────── OOB Tab Endpoints ──────────────────────────

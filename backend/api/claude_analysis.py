@@ -1396,7 +1396,7 @@ async def ai_preview(data: dict = None):
     endpoints = _prepare_traffic_payload(logs, host_filter)
 
     # Collect scan results
-    raw_scans = await get_scan_results_by_workspace(workspace_id, limit=1000)
+    raw_scans = await get_scan_results_by_workspace(workspace_id, limit=1000, brief=False)
     confirmed_vulns, scan_coverage = _prepare_scan_payload(raw_scans)
 
     # Estimate prompt size by building the actual prompt
@@ -1458,7 +1458,7 @@ async def ai_analyze(data: dict = None):
             _ai_status["endpoint_count"] = len(endpoints)
 
             # Collect injection scan results for this workspace
-            raw_scans = await get_scan_results_by_workspace(workspace_id, limit=1000)
+            raw_scans = await get_scan_results_by_workspace(workspace_id, limit=1000, brief=False)
             confirmed_vulns, scan_coverage = _prepare_scan_payload(raw_scans)
             log.info("Collected %d scan results (%d confirmed vulnerable) for AI analysis",
                      len(raw_scans), len(confirmed_vulns))
@@ -1571,7 +1571,7 @@ async def ai_analyze_request(data: dict = None):
             endpoints = _prepare_traffic_payload(logs, host_filter, auth_context=auth_ctx)
             _ai_status["endpoint_count"] = len(endpoints)
 
-            raw_scans = await get_scan_results_by_workspace(workspace_id, limit=1000)
+            raw_scans = await get_scan_results_by_workspace(workspace_id, limit=1000, brief=False)
             confirmed_vulns, scan_coverage = _prepare_scan_payload(raw_scans)
 
             if not endpoints and not confirmed_vulns and not scan_coverage:
@@ -1849,7 +1849,7 @@ async def ai_triage(data: dict = None):
                 # Collect traffic fresh
                 logs = await get_request_logs(session_id=workspace_id, limit=2000)
                 endpoints = _prepare_traffic_payload(logs, host_filter, auth_context=auth_context)
-                raw_scans = await get_scan_results_by_workspace(workspace_id, limit=1000)
+                raw_scans = await get_scan_results_by_workspace(workspace_id, limit=1000, brief=False)
                 confirmed_vulns, scan_coverage = _prepare_scan_payload(raw_scans)
 
             _ai_status["endpoint_count"] = len(endpoints)

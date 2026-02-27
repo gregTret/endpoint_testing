@@ -9,6 +9,18 @@ window.LogViewer = (() => {
     // ── DOM refs (resolved after DOMContentLoaded) ──
     let listEl, searchEl, methodFilterEl, detailPanel, detailContent, detailTitle;
 
+    // ── Render scheduling — coalesce rapid updates into one paint ──
+    let _renderScheduled = false;
+
+    function _scheduleRender() {
+        if (_renderScheduled) return;
+        _renderScheduled = true;
+        requestAnimationFrame(() => {
+            _renderScheduled = false;
+            _doRenderList();
+        });
+    }
+
     function init() {
         listEl        = document.getElementById('log-list');
         searchEl      = document.getElementById('log-search');
@@ -16,16 +28,37 @@ window.LogViewer = (() => {
         detailPanel   = document.getElementById('detail-panel');
         detailContent = document.getElementById('detail-content');
         detailTitle   = document.getElementById('detail-title');
-        searchEl.addEventListener('input', renderList);
-        methodFilterEl.addEventListener('change', renderList);
+        searchEl.addEventListener('input', _scheduleRender);
+        methodFilterEl.addEventListener('change', _scheduleRender);
         document.getElementById('btn-close-detail').addEventListener('click', closeDetail);
+
+        // ── Event delegation — one handler for all log entries ──
+        listEl.addEventListener('click', (e) => {
+            const el = e.target.closest('.log-entry');
+            if (el) selectEntry(Number(el.dataset.id));
+        });
+        listEl.addEventListener('dblclick', (e) => {
+            const el = e.target.closest('.log-entry');
+            if (el) {
+                userClosedDetail = false;
+                detailPanel.classList.remove('collapsed');
+                selectEntry(Number(el.dataset.id));
+            }
+        });
+        listEl.addEventListener('contextmenu', (e) => {
+            const el = e.target.closest('.log-entry');
+            if (!el) return;
+            e.preventDefault();
+            const entry = logs.find(l => l.id === Number(el.dataset.id));
+            if (entry) _showCtxMenu(e.clientX, e.clientY, entry);
+        });
     }
 
     /** Called from WebSocket for each new request log */
     function addEntry(entry) {
         logs.unshift(entry);
         if (logs.length > 2000) logs.length = 2000; // cap memory
-        renderList();
+        _scheduleRender();
     }
 
     /** Batch-add entries without re-rendering on each one */
@@ -34,10 +67,13 @@ window.LogViewer = (() => {
             logs.unshift(e);
         }
         if (logs.length > 2000) logs.length = 2000;
-        renderList();
+        _scheduleRender();
     }
 
-    function renderList() {
+    /** Public alias so search/filter still work */
+    function renderList() { _scheduleRender(); }
+
+    function _doRenderList() {
         const search = (searchEl.value || '').toLowerCase();
         const method = methodFilterEl.value;
 
@@ -61,29 +97,13 @@ window.LogViewer = (() => {
                 <span class="log-time">${fmtTime(e.timestamp)}${e.duration_ms ? ' · ' + e.duration_ms.toFixed(0) + 'ms' : ''}</span>
             </div>`;
         }).join('');
-
-        // Attach click handlers
-        listEl.querySelectorAll('.log-entry').forEach(el => {
-            el.addEventListener('click', () => selectEntry(Number(el.dataset.id)));
-            el.addEventListener('dblclick', () => {
-                userClosedDetail = false;
-                detailPanel.classList.remove('collapsed');
-                selectEntry(Number(el.dataset.id));
-            });
-            el.addEventListener('contextmenu', (e) => {
-                e.preventDefault();
-                const entry = logs.find(l => l.id === Number(el.dataset.id));
-                if (!entry) return;
-                _showCtxMenu(e.clientX, e.clientY, entry);
-            });
-        });
     }
 
     let userClosedDetail = false;
 
     async function selectEntry(id) {
         selectedId = id;
-        renderList();
+        _scheduleRender();
 
         const entry = logs.find(e => e.id === id);
         if (!entry) return;
@@ -160,12 +180,14 @@ ${EPTUtils.bodyPreBlock((entry.response_body || '').substring(0, 5000))}
     /** Build a portable request object from a log entry */
     function _buildReq(entry) {
         return {
+            id: entry.id,
             method: entry.method,
             url: entry.url,
             headers: entry.request_headers || {},
             body: entry.request_body || '',
             request_headers: entry.request_headers || {},
             request_body: entry.request_body || '',
+            content_type: entry.content_type || '',
         };
     }
 

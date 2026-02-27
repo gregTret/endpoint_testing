@@ -131,7 +131,7 @@ html, body {
     z-index: 50;
 }
 
-/* Tab sidebar */
+/* Tab sidebar — z-index ensures it paints above #tab-content's stacking context */
 #tab-bar {
     grid-column: 1;
     grid-row: 1 / -1;
@@ -142,6 +142,8 @@ html, body {
     background: var(--bg);
     overflow: visible;
     flex-shrink: 0;
+    position: relative;
+    z-index: 2;
 }
 
 .tab-spacer { flex: 1; min-height: 0; }
@@ -200,7 +202,7 @@ html, body {
 .tab:hover::after { opacity: 1; }
 
 /* Tab panes */
-#tab-content { grid-column: 2; grid-row: 1; overflow: hidden; position: relative; min-height: 0; }
+#tab-content { grid-column: 2; grid-row: 1; overflow: hidden; position: relative; min-height: 0; z-index: 0; isolation: isolate; }
 
 .tab-pane {
     display: none;
@@ -561,7 +563,7 @@ html, body {
 .scan-controls .btn-small { min-width: 60px; height: 34px; }
 
 /* ── Scan Results ─────────────────────────────────────────────────── */
-#scan-results { flex: 1; padding: 4px 0; min-height: 580px; }
+#scan-results { flex: 1; padding: 4px 0; min-height: 0; }
 
 .scan-summary {
     display: flex;

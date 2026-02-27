@@ -12,6 +12,47 @@ window.SiteMap = (() => {
     let crawlRunning = false;
     let historyPanel, historyList, historyToggle, historyBadge;
 
+    // ── Render scheduling — coalesce rapid updates into one paint ──
+    let _treeRenderScheduled = false;
+    let _crawlRenderScheduled = false;
+
+    function _scheduleTreeRender() {
+        if (_treeRenderScheduled) return;
+        _treeRenderScheduled = true;
+        requestAnimationFrame(() => {
+            _treeRenderScheduled = false;
+            renderTree();
+        });
+    }
+
+    function _scheduleCrawlRender() {
+        if (_crawlRenderScheduled) return;
+        _crawlRenderScheduled = true;
+        requestAnimationFrame(() => {
+            _crawlRenderScheduled = false;
+            _doRenderCrawlHistory();
+        });
+    }
+
+    // ── URL persistence batching ──────────────────────
+    let _pendingUrls = [];
+    let _persistTimer = null;
+
+    function _queuePersist(url) {
+        _pendingUrls.push(url);
+        if (!_persistTimer) {
+            _persistTimer = setTimeout(_flushPersist, 500);
+        }
+    }
+
+    function _flushPersist() {
+        _persistTimer = null;
+        if (!_pendingUrls.length) return;
+        const batch = _pendingUrls;
+        _pendingUrls = [];
+        _persistUrls(batch);
+    }
+
     function init() {
         treeEl    = document.getElementById('site-tree');
         crawlBtn  = document.getElementById('btn-start-crawl');
@@ -33,15 +74,38 @@ window.SiteMap = (() => {
 
         document.getElementById('btn-clear-crawl-history').addEventListener('click', () => {
             crawlRequests = [];
-            renderCrawlHistory();
+            _doRenderCrawlHistory();
+        });
+
+        // ── Event delegation for crawl history ──
+        historyList.addEventListener('click', (e) => {
+            const el = e.target.closest('.log-entry');
+            if (!el) return;
+            const entry = crawlRequests.find(r => r.id === Number(el.dataset.crawlId));
+            if (entry) _showCrawlDetail(entry);
+        });
+        historyList.addEventListener('contextmenu', (ev) => {
+            const el = ev.target.closest('.log-entry');
+            if (!el) return;
+            ev.preventDefault();
+            const entry = crawlRequests.find(r => r.id === Number(el.dataset.crawlId));
+            if (!entry) return;
+            SendTo.showContextMenu(ev.clientX, ev.clientY, {
+                method: entry.method,
+                url: entry.url,
+                headers: entry.request_headers || {},
+                body: entry.request_body || '',
+                request_headers: entry.request_headers || {},
+                request_body: entry.request_body || '',
+            }, 'sitemap');
         });
     }
 
     /** Add a URL to the tree (called for every new request log) */
     function addUrl(urlStr) {
         _insertUrl(urlStr);
-        _persistUrl(urlStr);
-        renderTree();
+        _queuePersist(urlStr);
+        _scheduleTreeRender();
     }
 
     function _insertUrl(urlStr) {
@@ -64,16 +128,7 @@ window.SiteMap = (() => {
     function addUrls(urls) {
         for (const u of urls) _insertUrl(u);
         _persistUrls(urls);
-        renderTree();
-    }
-
-    /** Persist a single URL to the backend */
-    function _persistUrl(url) {
-        fetch(`${API}/sitemap`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url }),
-        }).catch(() => {});
+        _scheduleTreeRender();
     }
 
     /** Persist many URLs to the backend */
@@ -102,10 +157,13 @@ window.SiteMap = (() => {
         if (!crawlRunning) return;
         crawlRequests.unshift(entry);
         if (crawlRequests.length > 2000) crawlRequests.length = 2000;
-        renderCrawlHistory();
+        _scheduleCrawlRender();
     }
 
-    function renderCrawlHistory() {
+    /** Public alias for explicit re-renders (e.g. clear) */
+    function renderCrawlHistory() { _doRenderCrawlHistory(); }
+
+    function _doRenderCrawlHistory() {
         historyBadge.textContent = crawlRequests.length;
 
         historyList.innerHTML = crawlRequests.map(e => {
@@ -121,26 +179,7 @@ window.SiteMap = (() => {
                 <span class="log-time">${_fmtTime(e.timestamp)}${e.duration_ms ? ' \u00b7 ' + e.duration_ms.toFixed(0) + 'ms' : ''}</span>
             </div>`;
         }).join('');
-
-        historyList.querySelectorAll('.log-entry').forEach(el => {
-            el.addEventListener('click', () => {
-                const entry = crawlRequests.find(r => r.id === Number(el.dataset.crawlId));
-                if (entry) _showCrawlDetail(entry);
-            });
-            el.addEventListener('contextmenu', (ev) => {
-                ev.preventDefault();
-                const entry = crawlRequests.find(r => r.id === Number(el.dataset.crawlId));
-                if (!entry) return;
-                SendTo.showContextMenu(ev.clientX, ev.clientY, {
-                    method: entry.method,
-                    url: entry.url,
-                    headers: entry.request_headers || {},
-                    body: entry.request_body || '',
-                    request_headers: entry.request_headers || {},
-                    request_body: entry.request_body || '',
-                }, 'sitemap');
-            });
-        });
+        // Event handlers are on historyList via delegation (set up in init)
     }
 
     function _showCrawlDetail(entry) {
@@ -351,9 +390,8 @@ ${EPTUtils.bodyPreBlock((entry.response_body || '').substring(0, 5000))}
         try {
             const res = await fetch(`${API}/crawl/results`);
             const data = await res.json();
-            for (const url of [...(data.visited || []), ...(data.discovered || [])]) {
-                addUrl(url);
-            }
+            const urls = [...(data.visited || []), ...(data.discovered || [])];
+            if (urls.length) addUrls(urls);
         } catch (_) {}
     }
 

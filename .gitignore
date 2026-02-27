@@ -46,3 +46,5 @@ oob_server/deploy.ps1
 oob_server/fix_ws_config.txt
 oob_server/quickdeploy.ps1
 oob_server/start.sh
+notes/*
+oob_server/TEST_NOTES.md

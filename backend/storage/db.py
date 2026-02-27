@@ -37,7 +37,8 @@ async def init_db():
                 response_body TEXT DEFAULT '',
                 content_type TEXT DEFAULT '',
                 duration_ms REAL DEFAULT 0,
-                session_id TEXT DEFAULT 'default'
+                session_id TEXT DEFAULT 'default',
+                multipart_meta TEXT DEFAULT NULL
             )
         """)
         await db.execute("""
@@ -96,6 +97,13 @@ async def init_db():
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_creds_workspace ON credentials(workspace_id)"
         )
+
+        # Migration: add multipart_meta to request_logs if missing
+        try:
+            await db.execute("SELECT multipart_meta FROM request_logs LIMIT 1")
+        except Exception:
+            await db.execute("ALTER TABLE request_logs ADD COLUMN multipart_meta TEXT DEFAULT NULL")
+            log.info("migrated request_logs table: added multipart_meta column")
 
         # Migration: add request_headers / request_body to scan_results if missing
         try:
@@ -276,8 +284,9 @@ async def save_request_log(entry: dict) -> int:
         cursor = await db.execute("""
             INSERT INTO request_logs
             (timestamp, method, url, host, path, request_headers, request_body,
-             status_code, response_headers, response_body, content_type, duration_ms, session_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             status_code, response_headers, response_body, content_type, duration_ms, session_id,
+             multipart_meta)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             entry.get("timestamp", ""),
             entry.get("method", ""),
@@ -292,6 +301,7 @@ async def save_request_log(entry: dict) -> int:
             entry.get("content_type", ""),
             entry.get("duration_ms", 0),
             entry.get("session_id", "default"),
+            entry.get("multipart_meta"),
         ))
         await db.commit()
         return cursor.lastrowid
@@ -354,6 +364,36 @@ async def get_request_log_by_id(log_id: int) -> Optional[dict]:
         return None
 
 
+async def get_request_logs_in_range(
+    start_id: int, end_id: int, session_id: str | None = None,
+) -> list[dict]:
+    """Fetch log entries with IDs between start_id and end_id (inclusive).
+
+    Used by the upload injector to discover nearby flow steps (PUT blob,
+    POST complete) relative to a captured initiation request.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        if session_id:
+            cursor = await db.execute(
+                "SELECT * FROM request_logs WHERE id BETWEEN ? AND ? AND session_id = ? ORDER BY id",
+                (start_id, end_id, session_id),
+            )
+        else:
+            cursor = await db.execute(
+                "SELECT * FROM request_logs WHERE id BETWEEN ? AND ? ORDER BY id",
+                (start_id, end_id),
+            )
+        rows = await cursor.fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            d["request_headers"] = _safe_json(d.get("request_headers", "{}"))
+            d["response_headers"] = _safe_json(d.get("response_headers", "{}"))
+            results.append(d)
+        return results
+
+
 async def clear_request_logs(session_id: str = "default"):
     """Delete all logs for a session."""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -395,14 +435,23 @@ async def save_scan_result(result: dict) -> int:
         return cursor.lastrowid
 
 
+_SCAN_LIGHT_COLS = (
+    "id, timestamp, target_url, injector_type, payload, injection_point, "
+    "original_param, response_code, response_time_ms, is_vulnerable, "
+    "confidence, details, session_id, workspace_id"
+)
+
+
 async def get_scan_results(
-    session_id: str = "default", limit: int = 200
+    session_id: str = "default", limit: int = 200, brief: bool = True
 ) -> list[dict]:
-    """Fetch injection scan results by scan session_id (for live polling)."""
+    """Fetch injection scan results by scan session_id (for live polling).
+    When brief=True (default), excludes heavy fields for fast UI rendering."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
+        cols = _SCAN_LIGHT_COLS if brief else "*"
         cursor = await db.execute(
-            "SELECT * FROM scan_results WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+            f"SELECT {cols} FROM scan_results WHERE session_id = ? ORDER BY id DESC LIMIT ?",
             (session_id, limit),
         )
         rows = await cursor.fetchall()
@@ -410,17 +459,31 @@ async def get_scan_results(
 
 
 async def get_scan_results_by_workspace(
-    workspace_id: str = "default", limit: int = 500
+    workspace_id: str = "default", limit: int = 500, brief: bool = True
 ) -> list[dict]:
-    """Fetch all injection scan results for a workspace (history)."""
+    """Fetch all injection scan results for a workspace (history).
+    When brief=True (default), excludes heavy fields for fast UI rendering.
+    Set brief=False for full data (e.g. AI analysis)."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
+        cols = _SCAN_LIGHT_COLS if brief else "*"
         cursor = await db.execute(
-            "SELECT * FROM scan_results WHERE workspace_id = ? ORDER BY id DESC LIMIT ?",
+            f"SELECT {cols} FROM scan_results WHERE workspace_id = ? ORDER BY id DESC LIMIT ?",
             (workspace_id, limit),
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+
+async def get_scan_result_detail(result_id: int) -> dict | None:
+    """Fetch full details for a single scan result (including heavy fields)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM scan_results WHERE id = ?", (result_id,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
 
 
 async def delete_scan_history_by_workspace(workspace_id: str = "default"):
@@ -459,7 +522,7 @@ async def delete_oob_results_by_workspace(workspace_id: str = "default"):
 async def export_session(session_id: str = "default") -> dict:
     """Export all data for a session."""
     logs = await get_request_logs(session_id, limit=10000)
-    scans = await get_scan_results(session_id, limit=10000)
+    scans = await get_scan_results(session_id, limit=10000, brief=False)
     return {"session_id": session_id, "request_logs": logs, "scan_results": scans}
 
 

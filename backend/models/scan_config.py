@@ -14,6 +14,7 @@ class ScanConfig(BaseModel):
     target_keys: Optional[list[str]] = None  # specific keys to inject into (None = all)
     follow_redirects: bool = False
     timeout: float = 10.0
+    extra: dict = {}
 
 
 class ScanResult(BaseModel):
