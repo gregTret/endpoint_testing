@@ -10,4 +10,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     showBrowser:   (wsId, lastUrl) => ipcRenderer.send('show-browser', wsId, lastUrl),
     hideBrowser:   ()    => ipcRenderer.send('hide-browser'),
     setPanelWidth: (w)   => ipcRenderer.send('set-panel-width', w),
+
+    // Monitor pop-out
+    popOutMonitor:          (cfg) => ipcRenderer.send('open-monitor-window', cfg),
+    focusMonitorWindow:     ()    => ipcRenderer.send('focus-monitor-window'),
+    sendMonitorConfig:      (cfg) => ipcRenderer.send('monitor-update-config', cfg),
+    onMonitorWindowClosed:  (cb)  => ipcRenderer.on('monitor-window-closed', () => cb()),
 });

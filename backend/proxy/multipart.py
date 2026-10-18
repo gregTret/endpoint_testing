@@ -54,16 +54,29 @@ def parse_multipart(content_type: str, raw_body: bytes) -> list[dict]:
     results = []
 
     for part_data in parts_raw:
-        # Skip preamble, epilogue, and end marker
-        stripped = part_data.strip()
-        if not stripped or stripped == b"--" or stripped.startswith(end_delimiter):
+        # Trim ONLY the CRLF framing around each part — never .strip(), which
+        # would also eat whitespace bytes (space/tab/\n/\r) from real binary
+        # file content and silently corrupt the uploaded file.
+        chunk = part_data
+
+        # Skip preamble, the closing "--boundary--" leftover ("--\r\n"), and
+        # any empty segment, without mutating a real part's bytes.
+        if not chunk.strip(b"\r\n") or chunk.lstrip(b"\r\n").startswith(b"--"):
             continue
-        # Remove trailing -- if this is the last part
-        if stripped.endswith(b"--"):
-            stripped = stripped[:-2].rstrip()
+
+        # One leading CRLF/LF (from the boundary split)
+        if chunk.startswith(b"\r\n"):
+            chunk = chunk[2:]
+        elif chunk.startswith(b"\n"):
+            chunk = chunk[1:]
+        # One trailing CRLF/LF (framing before the next boundary)
+        if chunk.endswith(b"\r\n"):
+            chunk = chunk[:-2]
+        elif chunk.endswith(b"\n"):
+            chunk = chunk[:-1]
 
         # Split headers from body (separated by \r\n\r\n or \n\n)
-        header_body_split = re.split(b"\r?\n\r?\n", stripped, maxsplit=1)
+        header_body_split = re.split(b"\r?\n\r?\n", chunk, maxsplit=1)
         if len(header_body_split) < 2:
             continue
 
@@ -90,9 +103,8 @@ def parse_multipart(content_type: str, raw_body: bytes) -> list[dict]:
 
         part_ct = part_headers.get("content-type", "text/plain" if not filename else "application/octet-stream")
 
-        # Strip trailing \r\n from body
-        if body.endswith(b"\r\n"):
-            body = body[:-2]
+        # NOTE: the part's trailing CRLF framing was already removed above;
+        # do not strip here or a file ending in a real CRLF loses bytes.
 
         is_binary = not _is_text_content(part_ct, filename)
 

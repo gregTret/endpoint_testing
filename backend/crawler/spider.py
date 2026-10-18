@@ -22,6 +22,7 @@ class Spider:
         self.visited: set[str] = set()
         self.discovered: set[str] = set()
         self.forms: list[dict] = []
+        self._form_keys: set[str] = set()
         self.max_depth: int = CRAWL_DEFAULT_DEPTH
         self.max_pages: int = CRAWL_DEFAULT_MAX_PAGES
         self.running: bool = False
@@ -56,6 +57,7 @@ class Spider:
         self.visited.clear()
         self.discovered.clear()
         self.forms.clear()
+        self._form_keys.clear()
         self._pages_crawled = 0
         self.running = True
         self._status = "starting"
@@ -107,7 +109,18 @@ class Spider:
                 links = extract_links(html, url)
                 same = filter_same_domain(links, domain)
                 self.discovered.update(same)
-                self.forms.extend(extract_forms(html, url))
+                # Dedupe forms — site-wide forms (nav search, login) appear on
+                # every page and would otherwise be recorded (and later scanned)
+                # once per crawled page.
+                for form in extract_forms(html, url):
+                    key = "{}|{}|{}".format(
+                        form.get("action", ""),
+                        form.get("method", ""),
+                        ",".join(sorted(i.get("name", "") for i in form.get("inputs", []))),
+                    )
+                    if key not in self._form_keys:
+                        self._form_keys.add(key)
+                        self.forms.append(form)
 
                 for link in same:
                     if link not in self.visited and self._pages_crawled < self.max_pages:

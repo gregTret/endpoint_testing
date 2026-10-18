@@ -17,6 +17,7 @@ var PayloadEditor = (function () {
         traversal: 'Path Traversal',
         ssti: 'Server-Side Template Injection',
         mongo: 'MongoDB Injection',
+        firestore: 'Firestore Injection',
         aql: 'AQL Injection',
         python: 'Python Injection',
     };

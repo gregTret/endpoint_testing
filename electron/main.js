@@ -14,6 +14,7 @@ const IS_WIN = process.platform === 'win32';
 let mainWindow;
 let browserView;
 let pythonProcess;
+let monitorWindow;
 
 // ── Python detection ──────────────────────────────────────────────
 
@@ -128,6 +129,10 @@ function createWindow() {
     mainWindow.once('ready-to-show', () => {
         mainWindow.maximize();
         mainWindow.show();
+    });
+
+    mainWindow.on('close', () => {
+        if (monitorWindow && !monitorWindow.isDestroyed()) monitorWindow.close();
     });
 
     mainWindow.on('resize', updateBounds);
@@ -342,6 +347,62 @@ ipcMain.on('set-panel-width', (_e, width) => {
 ipcMain.on('hide-browser', () => {
     if (!mainWindow) return;
     mainWindow.setBrowserView(null);
+});
+
+// ── Monitor pop-out window ──────────────────────────────────────────
+
+let _monitorConfig = {};
+
+ipcMain.on('open-monitor-window', (_e, config) => {
+    if (monitorWindow) {
+        monitorWindow.focus();
+        return;
+    }
+
+    _monitorConfig = config || {};
+
+    monitorWindow = new BrowserWindow({
+        width: 800,
+        height: 500,
+        minWidth: 500,
+        minHeight: 300,
+        backgroundColor: '#0d1117',
+        title: 'Response Monitor',
+        webPreferences: {
+            preload: path.join(__dirname, 'monitor-preload.js'),
+            contextIsolation: true,
+            nodeIntegration: false,
+        },
+    });
+
+    monitorWindow.setMenuBarVisibility(false);
+    monitorWindow.loadFile(path.join(__dirname, 'renderer', 'monitor-popout.html'));
+
+    monitorWindow.webContents.once('did-finish-load', () => {
+        monitorWindow.webContents.send('monitor-config', _monitorConfig);
+    });
+
+    monitorWindow.on('closed', () => {
+        monitorWindow = null;
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('monitor-window-closed');
+        }
+    });
+});
+
+ipcMain.on('close-monitor-window', () => {
+    if (monitorWindow) monitorWindow.close();
+});
+
+ipcMain.on('focus-monitor-window', () => {
+    if (monitorWindow && !monitorWindow.isDestroyed()) monitorWindow.focus();
+});
+
+// Forward config updates (e.g. "Send to Monitor") from main renderer to popout
+ipcMain.on('monitor-update-config', (_e, cfg) => {
+    if (monitorWindow && !monitorWindow.isDestroyed()) {
+        monitorWindow.webContents.send('monitor-update-config', cfg);
+    }
 });
 
 // ── App lifecycle ──────────────────────────────────────────────────

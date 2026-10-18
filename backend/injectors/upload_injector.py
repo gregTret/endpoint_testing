@@ -231,11 +231,14 @@ class UploadInjector(BaseInjector):
     # ── Header merging ────────────────────────────────────────────
 
     async def _merge_headers(self, entry: dict) -> dict:
+        from injectors.base import _merge_headers_ci
         try:
-            from api.routes import get_default_headers
+            from api.routes import get_default_headers, get_workspace_header_overrides
             defaults = await get_default_headers()
+            ws_overrides = await get_workspace_header_overrides()
         except Exception:
             defaults = dict(DEFAULT_HEADERS)
+            ws_overrides = {}
 
         orig_headers = entry.get("request_headers", {})
         if isinstance(orig_headers, str):
@@ -246,7 +249,7 @@ class UploadInjector(BaseInjector):
 
         merged = dict(defaults)
         merged.update(orig_headers)
-        return merged
+        return _merge_headers_ci(merged, ws_overrides)
 
     # ══════════════════════════════════════════════════════════════
     #  MULTIPART MODE (existing logic)

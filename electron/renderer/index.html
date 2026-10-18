@@ -231,6 +231,7 @@
                             <option value="aql">AQL</option>
                             <option value="xss">XSS</option>
                             <option value="mongo">MongoDB</option>
+                            <option value="firestore">Firestore</option>
                             <option value="jwt">JWT</option>
                             <option value="ssti">SSTI</option>
                             <option value="cmd">Command</option>
@@ -674,6 +675,30 @@
                 <button id="btn-analytics-full" class="btn-small">Show Full Analysis</button>
             </div>
             <div id="analytics-body-content" class="scrollable"></div>
+        </div>
+
+        <!-- Monitor -->
+        <div class="tab-pane" data-tab="monitor">
+            <div class="pane-controls">
+                <input type="text" id="monitor-url" placeholder="Target URL to monitor..." spellcheck="false">
+                <label class="monitor-cfg-label">Interval (s) <input id="monitor-interval" class="monitor-cfg-num" type="number" value="1.0" min="0.5" step="0.5"></label>
+                <label class="monitor-cfg-label">Timeout (s) <input id="monitor-timeout" class="monitor-cfg-num" type="number" value="15" min="1" step="1"></label>
+                <button id="btn-monitor-toggle">Start Monitor</button>
+                <span id="monitor-status" class="monitor-status-badge">Idle</span>
+                <span style="flex:1"></span>
+                <button id="btn-monitor-popout" class="btn-small" title="Open in separate window">Pop Out</button>
+            </div>
+            <div class="monitor-graph-area">
+                <canvas id="monitor-canvas"></canvas>
+                <div id="monitor-popout-overlay" class="monitor-popout-overlay hidden">
+                    <div class="monitor-popout-msg">
+                        <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                        <p>Monitor is running in a separate window</p>
+                        <p class="monitor-popout-hint">Close that window to return here</p>
+                    </div>
+                </div>
+            </div>
+            <div id="monitor-latest" class="monitor-latest"></div>
         </div>
 
         <!-- Info -->
@@ -1138,6 +1163,7 @@
 <script src="js/auto-scan.js"></script>
 <script src="js/analytics.js"></script>
 <script src="js/payload-editor.js"></script>
+<script src="js/monitor.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

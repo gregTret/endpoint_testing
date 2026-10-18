@@ -8,7 +8,7 @@ from urllib.parse import urlparse, parse_qs, urlunparse, quote
 
 import httpx
 
-from config import SCAN_DEFAULT_TIMEOUT, SCAN_RESPONSE_CAP, PROXY_HOST, PROXY_PORT, DEFAULT_HEADERS
+from config import SCAN_DEFAULT_TIMEOUT, SCAN_RESPONSE_CAP, PROXY_HOST, PROXY_PORT, DEFAULT_HEADERS, OOB_DEFAULT_URL
 from models.scan_config import ScanResult, VulnerabilityReport
 
 log = logging.getLogger(__name__)
@@ -25,6 +25,23 @@ _DROP_HEADERS = frozenset({
 
 # Marker header so the mitmproxy addon skips logging scan traffic
 _SCAN_MARKER = {"x-ept-scan": "1"}
+
+
+def _merge_headers_ci(base: dict, overrides: dict) -> dict:
+    """Merge *overrides* into *base* with case-insensitive key replacement.
+
+    HTTP headers are case-insensitive but Python dicts aren't.  Captured
+    requests may use lowercase (``user-agent`` from HTTP/2) while workspace
+    settings use title-case (``User-Agent``).  This helper removes the
+    old-case key before inserting the override so httpx doesn't send
+    duplicate headers.
+    """
+    if not overrides:
+        return base
+    lower_map = {k.lower(): k for k in overrides}
+    cleaned = {k: v for k, v in base.items() if k.lower() not in lower_map}
+    cleaned.update(overrides)
+    return cleaned
 
 
 def _normalize_url_params(url: str, params: dict) -> tuple[str, dict]:
@@ -66,6 +83,22 @@ class BaseInjector(ABC):
 
     def __init__(self) -> None:
         self.results: list[ScanResult] = []
+
+    # ── OOB helper ────────────────────────────────────────────────────
+
+    _oob_url_override: str | None = None
+
+    @classmethod
+    def set_oob_url(cls, url: str) -> None:
+        """Set a workspace-specific OOB URL for payload generation."""
+        cls._oob_url_override = url.rstrip("/") if url else None
+
+    @classmethod
+    def _get_oob_url(cls) -> str:
+        """Return the OOB callback base URL for sprinkling into payloads."""
+        if cls._oob_url_override:
+            return cls._oob_url_override
+        return OOB_DEFAULT_URL.rstrip("/")
 
     # ── Abstract interface ────────────────────────────────────────────
 
@@ -127,16 +160,19 @@ class BaseInjector(ABC):
         results: list[ScanResult] = []
         ctrl = control or {"signal": "run"}
 
-        # Merge workspace default headers (User-Agent etc.) under request headers.
-        # Request-specific headers take priority over defaults.
+        # Three-layer header merge: defaults → form/request headers → workspace overrides.
+        # Workspace overrides always win so custom User-Agent etc. aren't clobbered.
         try:
-            from api.routes import get_default_headers
+            from api.routes import get_default_headers, get_workspace_header_overrides
             defaults = await get_default_headers()
+            ws_overrides = await get_workspace_header_overrides()
         except Exception:
+            log.warning("Failed to load workspace header settings, using config defaults")
             defaults = dict(DEFAULT_HEADERS)
+            ws_overrides = {}
         merged_headers = dict(defaults)
         merged_headers.update(headers)
-        headers = merged_headers
+        headers = _merge_headers_ci(merged_headers, ws_overrides)
 
         # Merge any query params embedded in the URL into the params dict
         # so injections actually replace values instead of appending duplicates
@@ -205,7 +241,10 @@ class BaseInjector(ABC):
         mod_url = url
         send_json = False
 
-        if injection_point == "params" and target_key in mod_params:
+        if injection_point == "params":
+            # Inject even when target_key isn't an existing param — this covers
+            # the param-less fallback target ("params", "q"), which would
+            # otherwise resend an unmodified baseline and test nothing.
             mod_params[target_key] = payload
         elif injection_point == "paths":
             # Replace a specific path segment with the payload
@@ -370,7 +409,10 @@ def _build_targets(
                         targets.append(("paths", key))
         elif point == "headers":
             for k in headers:
-                if k.lower() not in _SKIP_HEADERS:
+                # Skip both never-inject headers and the ones _test_single
+                # strips before sending — otherwise those targets become
+                # silent no-op baseline resends.
+                if k.lower() not in (_SKIP_HEADERS | _DROP_HEADERS):
                     if allowed is None or k in allowed:
                         targets.append(("headers", k))
         elif point == "body":

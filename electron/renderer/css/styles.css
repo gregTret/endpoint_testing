@@ -3399,5 +3399,96 @@ html, body {
     transform: translateX(-50%) translateY(0);
 }
 
+/* ── Response Monitor ─────────────────────────────────────────────── */
+
+.tab-pane[data-tab="monitor"] {
+    overflow: hidden;          /* override overflow-y:auto so flex children fill the pane */
+}
+
+.monitor-graph-area {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+    overflow: hidden;
+}
+
+#monitor-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    background: var(--bg);
+}
+
+.monitor-latest {
+    padding: 6px 10px;
+    font-family: var(--mono);
+    font-size: 12px;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+    min-height: 28px;
+}
+.monitor-latest-ok   { color: var(--success); }
+.monitor-latest-warn { color: var(--warning); }
+.monitor-latest-err  { color: var(--danger); }
+
+.monitor-status-badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: var(--surface2);
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+.monitor-status-badge.monitor-running {
+    background: rgba(63, 185, 80, .15);
+    color: var(--success);
+}
+
+.monitor-cfg-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+}
+
+.monitor-cfg-num {
+    width: 56px;
+    height: 28px;
+    padding: 0 6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    text-align: center;
+}
+.monitor-cfg-num:focus { border-color: var(--accent); outline: none; }
+
+.monitor-btn-active {
+    border-color: var(--danger) !important;
+    color: var(--danger) !important;
+}
+
+.monitor-popout-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(13, 17, 23, 0.88);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+}
+
+.monitor-popout-msg {
+    text-align: center;
+    color: var(--text-dim);
+}
+.monitor-popout-msg svg { margin-bottom: 10px; color: var(--accent); }
+.monitor-popout-msg p { margin: 4px 0; font-size: 14px; }
+.monitor-popout-hint { font-size: 11px; color: var(--text-dim); opacity: .7; }
+
 /* ── Utility ──────────────────────────────────────────────────────── */
 .hidden { display: none !important; }

@@ -14,8 +14,8 @@ from datetime import datetime, timezone
 
 import httpx
 
-from config import SCAN_DEFAULT_TIMEOUT, SCAN_RESPONSE_CAP, PROXY_HOST, PROXY_PORT
-from injectors.base import BaseInjector, _build_targets, _DROP_HEADERS, _SCAN_MARKER, _inject_into_body, _normalize_url_params
+from config import SCAN_DEFAULT_TIMEOUT, SCAN_RESPONSE_CAP, PROXY_HOST, PROXY_PORT, DEFAULT_HEADERS
+from injectors.base import BaseInjector, _build_targets, _DROP_HEADERS, _SCAN_MARKER, _inject_into_body, _merge_headers_ci, _normalize_url_params
 from models.scan_config import ScanResult, VulnerabilityReport
 from storage.db import get_payload_config
 
@@ -67,6 +67,19 @@ class QuickScanInjector(BaseInjector):
         headers = headers or {}
         injection_points = injection_points or ["params"]
         ctrl = control or {"signal": "run"}
+
+        # Three-layer header merge: defaults → form/request headers → workspace overrides.
+        try:
+            from api.routes import get_default_headers, get_workspace_header_overrides
+            defaults = await get_default_headers()
+            ws_overrides = await get_workspace_header_overrides()
+        except Exception:
+            log.warning("Failed to load workspace header settings, using config defaults")
+            defaults = dict(DEFAULT_HEADERS)
+            ws_overrides = {}
+        merged_headers = dict(defaults)
+        merged_headers.update(headers)
+        headers = _merge_headers_ci(merged_headers, ws_overrides)
 
         # Merge any query params embedded in the URL into the params dict
         url, params = _normalize_url_params(url, params)
