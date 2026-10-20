@@ -248,7 +248,7 @@ class JWTInjector(BaseInjector):
             lower = body.lower()
             if "invalid jwt" in lower or "invalid token" in lower or "token invalid" in lower:
                 return True
-            if "unauthorized" in lower or "forbidden" in lower and ("token" in lower or "jwt" in lower or "auth" in lower):
+            if ("unauthorized" in lower or "forbidden" in lower) and ("token" in lower or "jwt" in lower or "auth" in lower):
                 return True
             try:
                 data = json.loads(body)
@@ -359,14 +359,26 @@ class JWTInjector(BaseInjector):
     ) -> list:
         import asyncio
         import httpx
-        from config import SCAN_DEFAULT_TIMEOUT, SCAN_RESPONSE_CAP, PROXY_HOST, PROXY_PORT
-        from injectors.base import _DROP_HEADERS, _SCAN_MARKER
+        from config import SCAN_DEFAULT_TIMEOUT, SCAN_RESPONSE_CAP, PROXY_HOST, PROXY_PORT, DEFAULT_HEADERS
+        from injectors.base import _DROP_HEADERS, _SCAN_MARKER, _merge_headers_ci
         from datetime import datetime, timezone
 
         params = params or {}
         headers = headers or {}
         injection_points = injection_points or ["body", "headers"]
         ctrl = control or {"signal": "run"}
+
+        # Three-layer header merge: defaults → form/request headers → workspace overrides.
+        try:
+            from api.routes import get_default_headers, get_workspace_header_overrides
+            defaults = await get_default_headers()
+            ws_overrides = await get_workspace_header_overrides()
+        except Exception:
+            defaults = dict(DEFAULT_HEADERS)
+            ws_overrides = {}
+        merged = dict(defaults)
+        merged.update(headers)
+        headers = _merge_headers_ci(merged, ws_overrides)
 
         # Get baseline
         baseline = await self._send_request(url, method, params, headers, body, timeout)

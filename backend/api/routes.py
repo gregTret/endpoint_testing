@@ -75,11 +75,13 @@ def _load_injectors():
     from injectors.quick_scan_injector import QuickScanInjector
     from injectors.oob_injector import OOBInjector
     from injectors.upload_injector import UploadInjector
+    from injectors.firestore_injector import FirestoreInjector
     INJECTORS.update({
         "sql": SQLInjector,
         "aql": AQLInjector,
         "xss": XSSInjector,
         "mongo": MongoInjector,
+        "firestore": FirestoreInjector,
         "jwt": JWTInjector,
         "ssti": SSTIInjector,
         "cmd": CmdInjector,
@@ -446,6 +448,11 @@ async def start_scan(config: dict, background_tasks: BackgroundTasks):
             },
         )
 
+    # Set workspace OOB URL so sprinkled OOB payloads use the right callback
+    from injectors.base import BaseInjector
+    ws_oob_url = await get_workspace_setting(_active_workspace, "oob_server_url") or OOB_DEFAULT_URL
+    BaseInjector.set_oob_url(ws_oob_url)
+
     if config.injector_type == "quick":
         injector = injector_cls(injector_registry=INJECTORS, workspace_id=_active_workspace)
     elif config.injector_type == "oob":
@@ -670,12 +677,16 @@ async def replay_request(log_id: int):
 
     try:
         proxy_url = f"http://{PROXY_HOST}:{PROXY_PORT}"
+        from injectors.base import _merge_headers_ci
         defaults = await get_default_headers()
+        ws_overrides = await get_workspace_header_overrides()
         replay_headers = dict(defaults)
         replay_headers.update({
             k: v for k, v in entry["request_headers"].items()
             if k.lower() not in ("host", "content-length", "transfer-encoding")
         })
+        # Case-insensitive merge — workspace overrides win over captured headers
+        replay_headers = _merge_headers_ci(replay_headers, ws_overrides)
         replay_headers["x-ept-scan"] = "1"
         async with httpx.AsyncClient(verify=False, timeout=REPLAY_TIMEOUT, proxy=proxy_url) as client:
             resp = await client.request(
@@ -706,13 +717,17 @@ async def send_single_request(data: dict):
     if not url:
         return JSONResponse(status_code=400, content={"error": "URL is required"})
 
+    from injectors.base import _merge_headers_ci
     defaults = await get_default_headers()
+    ws_overrides = await get_workspace_header_overrides()
     clean_headers = dict(defaults)
     clean_headers.update({
         k: v for k, v in headers.items()
         if k.lower() not in ("host", "content-length", "transfer-encoding",
                               "connection", "accept-encoding")
     })
+    # Case-insensitive merge — workspace overrides win over form/captured headers
+    clean_headers = _merge_headers_ci(clean_headers, ws_overrides)
     clean_headers["x-ept-scan"] = "1"
 
     try:
@@ -913,6 +928,21 @@ async def get_default_headers() -> dict:
     return dict(DEFAULT_HEADERS)
 
 
+async def get_workspace_header_overrides() -> dict:
+    """Return ONLY the workspace-level header overrides (not merged with defaults).
+
+    This is applied as the FINAL layer in header merging so that workspace
+    settings (custom User-Agent, etc.) always win over captured/form headers.
+    """
+    raw = await get_workspace_setting(_active_workspace, "default_headers")
+    if raw:
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return {}
+
+
 @router.get("/settings/headers")
 async def get_header_settings():
     headers = await get_default_headers()
@@ -936,7 +966,7 @@ async def update_header_settings(data: dict):
 
 
 # All user-facing injector types (excludes internal "quick" and "oob")
-_ALL_INJECTOR_TYPES = ["quick", "sql", "aql", "xss", "mongo", "jwt", "ssti", "cmd", "traversal", "python", "upload"]
+_ALL_INJECTOR_TYPES = ["quick", "sql", "aql", "xss", "mongo", "firestore", "jwt", "ssti", "cmd", "traversal", "python", "upload"]
 
 
 @router.get("/settings/injector-types")
@@ -945,6 +975,11 @@ async def get_injector_types_settings():
     if raw:
         try:
             enabled = json.loads(raw)
+            # Auto-enable new injector types not yet in the saved list
+            saved_set = set(enabled)
+            for t in _ALL_INJECTOR_TYPES:
+                if t not in saved_set:
+                    enabled.append(t)
         except (json.JSONDecodeError, TypeError):
             enabled = list(_ALL_INJECTOR_TYPES)
     else:
@@ -1073,3 +1108,28 @@ async def oob_manual_check():
                 log.info("OOB manual check found callback: %s token=%s", sub_type, cb_token)
 
     return {"checked": len(entries), "found": total_found, "details": details}
+
+
+# ──────────────────────────── Response Monitor ─────────────────────────
+
+
+@router.get("/monitor/ping")
+async def monitor_ping(url: str, timeout: float = 15):
+    """Ping a URL and return response time. Does NOT go through mitmproxy."""
+    import httpx
+
+    if not url:
+        return {"status_code": None, "response_time_ms": None, "error": "No URL provided"}
+
+    t0 = time.time()
+    try:
+        async with httpx.AsyncClient(verify=False, follow_redirects=True, timeout=timeout) as client:
+            resp = await client.get(url)
+        elapsed = (time.time() - t0) * 1000
+        return {"status_code": resp.status_code, "response_time_ms": round(elapsed, 1), "error": None}
+    except httpx.TimeoutException:
+        elapsed = (time.time() - t0) * 1000
+        return {"status_code": None, "response_time_ms": round(elapsed, 1), "error": "Timeout"}
+    except Exception as e:
+        elapsed = (time.time() - t0) * 1000
+        return {"status_code": None, "response_time_ms": round(elapsed, 1), "error": str(e)}

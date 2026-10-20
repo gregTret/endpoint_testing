@@ -24,6 +24,7 @@
         { id: 'repeater',  label: 'Repeater',   icon: '<svg viewBox="0 0 24 24"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>' },
         { id: 'ai',        label: 'AI',         icon: '<svg viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/><line x1="14.5" y1="4" x2="9.5" y2="20"/></svg>' },
         { id: 'analytics', label: 'Analytics',  icon: '<svg viewBox="0 0 24 24"><rect x="4" y="14" width="4" height="7" rx="1"/><rect x="10" y="8" width="4" height="13" rx="1"/><rect x="16" y="3" width="4" height="18" rx="1"/></svg>' },
+        { id: 'monitor',   label: 'Monitor',    icon: '<svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>' },
         { id: 'info',      label: 'Info',       icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>' },
         { id: 'settings',  label: 'Settings',   icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>' },
     ];
@@ -77,6 +78,7 @@
         if (typeof AiSuggest !== 'undefined') AiSuggest.init();
         if (typeof AutoScan !== 'undefined') AutoScan.init();
         Analytics.init();
+        if (typeof ResponseMonitor !== 'undefined') ResponseMonitor.init();
         PayloadEditor.init();
 
         // URL bar
@@ -444,6 +446,7 @@
         if (tabName === 'ai' && AiAnalysis.refresh) AiAnalysis.refresh();
         if (tabName === 'ai' && typeof AiTriage !== 'undefined' && AiTriage.refresh) AiTriage.refresh();
         if (tabName === 'ai' && AutoScan.refresh) AutoScan.refresh();
+        if (tabName === 'monitor' && typeof ResponseMonitor !== 'undefined') ResponseMonitor.onTabVisible();
         if (tabName === 'info') refreshInfoTab();
     }
 
@@ -770,6 +773,7 @@
         aql: 'AQL Injection',
         xss: 'Cross-Site Scripting',
         mongo: 'MongoDB Injection',
+        firestore: 'Firestore Injection',
         jwt: 'JWT',
         ssti: 'SSTI',
         cmd: 'Command Injection',

@@ -12,6 +12,13 @@ log = logging.getLogger(__name__)
 async def init_db():
     """Create tables if they don't exist."""
     async with aiosqlite.connect(DB_PATH) as db:
+        # Enable WAL so the proxy log writer and a running scan can write
+        # concurrently without "database is locked" errors. WAL is a
+        # persistent property of the database file, so setting it once here
+        # applies to every later connection.
+        await db.execute("PRAGMA journal_mode=WAL")
+        await db.execute("PRAGMA synchronous=NORMAL")
+
         # ── Workspaces ──
         await db.execute("""
             CREATE TABLE IF NOT EXISTS workspaces (

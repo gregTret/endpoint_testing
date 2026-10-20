@@ -36,6 +36,7 @@ from config import (
 )
 
 from storage.db import save_auto_scan_session, update_auto_scan_session
+from injectors.base import _merge_headers_ci
 
 from api.claude_analysis import (
     _build_targeted_prompt,
@@ -188,6 +189,14 @@ async def _get_default_headers() -> dict:
         return await get_default_headers()
     except Exception:
         return dict(DEFAULT_HEADERS)
+
+
+async def _get_workspace_header_overrides() -> dict:
+    try:
+        from api.routes import get_workspace_header_overrides
+        return await get_workspace_header_overrides()
+    except Exception:
+        return {}
 
 
 # ── Phase 1: Crawl ─────────────────────────────────────────────────
@@ -564,6 +573,11 @@ async def _phase_inject(
     auth_hdrs = get_auth_context() or {}
 
     findings = []
+    # Confirmed vulns in the shape _prepare_scan_payload produces, so Phase 4
+    # (AI) can actually see what injection confirmed. The inject phase does not
+    # write to the scan_results table, so these would otherwise be invisible to
+    # the AI prompt.
+    inject_confirmed = []
     control_for_injectors = {"signal": "run"}
 
     for ep_idx, ep in enumerate(endpoint_configs):
@@ -585,12 +599,15 @@ async def _phase_inject(
         injection_points = ["paths"]  # always try path injection
         if all_params:
             injection_points.append("params")
+        body_json = ""
         if body_params and ep["method"] in ("POST", "PUT", "PATCH"):
             injection_points.append("body")
-            # For POST endpoints, inject body params too
-            # The injector uses "params" dict for query params; we merge body
-            # params in so they get tested as well
-            all_params.update(body_params)
+            # Send body params as a real JSON request body so the "body"
+            # injection point replaces individual JSON fields. Previously these
+            # were merged into the query string, which never matched the real
+            # request shape (and often 400'd), so body injections were missed.
+            body_json = json.dumps(body_params)
+            ep_headers.setdefault("Content-Type", "application/json")
 
         source_label = f"[{ep.get('source', '?').upper()}]"
         _emit_event("inject", f"Testing endpoint {ep_idx + 1}/{total_endpoints}",
@@ -627,6 +644,7 @@ async def _phase_inject(
                     url=ep["url"],
                     method=ep["method"],
                     params=all_params,
+                    body=body_json,
                     headers=ep_headers if ep_headers else None,
                     injection_points=injection_points,
                     timeout=SCAN_DEFAULT_TIMEOUT,
@@ -647,13 +665,25 @@ async def _phase_inject(
                             "evidence": f"Payload: {r.payload} -> Status {r.response_code}",
                             "recommendation": f"Sanitize {r.original_param} parameter against {inj_key} injection",
                         })
+                        inject_confirmed.append({
+                            "url": ep["url"],
+                            "type": inj_key,
+                            "payload": r.payload,
+                            "where": r.injection_point,
+                            "param": r.original_param,
+                            "status": r.response_code,
+                            "response_snippet": (r.response_body or "")[:500],
+                            "time_ms": r.response_time_ms,
+                            "confidence": r.confidence,
+                            "details": r.details,
+                        })
             except Exception as e:
                 log.warning("Injector %s failed on %s: %s", inj_key, _safe_ascii(ep["url"]), e)
 
     _state["phase_detail"] = f"Found {len(findings)} vulnerabilities"
     _emit_event("inject", "Injection phase complete",
                 f"{len(findings)} vulnerabilities found, {_state['requests_sent']} requests sent")
-    _results["inject"] = {"findings": findings}
+    _results["inject"] = {"findings": findings, "confirmed": inject_confirmed}
     return findings
 
 
@@ -709,6 +739,8 @@ async def _phase_upload(
         headers.update({k: v for k, v in auth_hdrs.items()
                         if k.lower() not in ("host", "content-length", "content-type",
                                               "transfer-encoding")})
+    # Case-insensitive merge — workspace overrides always win
+    headers = _merge_headers_ci(headers, await _get_workspace_header_overrides())
     proxy_url = f"http://{PROXY_HOST}:{PROXY_PORT}"
 
     # Test each upload endpoint with dangerous file types
@@ -781,7 +813,6 @@ async def _phase_upload(
 
 async def _phase_ai(
     urls: list[str],
-    inject_findings: list[dict],
     ai_model: str,
 ) -> dict | None:
     """Run Claude AI analysis. Returns AI response dict with findings + targeted_requests."""
@@ -816,6 +847,9 @@ async def _phase_ai(
     from storage.db import get_scan_results_by_workspace
     scan_rows = await get_scan_results_by_workspace(workspace, limit=1000, brief=False)
     confirmed_vulns, scan_coverage = _prepare_scan_payload(scan_rows)
+    # The inject phase doesn't persist to scan_results, so merge its
+    # confirmations (already in the right shape) so the AI actually sees them.
+    confirmed_vulns = _results.get("inject", {}).get("confirmed", []) + confirmed_vulns
 
     _state["phase_detail"] = f"Sending {len(endpoints)} endpoints to Claude ({ai_model})..."
 
@@ -912,6 +946,8 @@ async def _phase_targeted(
         headers.update({k: v for k, v in auth_hdrs.items()
                         if k.lower() not in ("host", "content-length", "content-type",
                                               "transfer-encoding")})
+    # Case-insensitive merge — workspace overrides always win
+    headers = _merge_headers_ci(headers, await _get_workspace_header_overrides())
     proxy_url = f"http://{PROXY_HOST}:{PROXY_PORT}"
 
     targeted_results = []
@@ -1109,7 +1145,7 @@ async def _run_pipeline(config: dict):
         await _update_session("running", "inject")
 
         # ── Phase 2: Inject ──
-        inject_findings = await _phase_inject(backend_endpoints, rate_limiter)
+        await _phase_inject(backend_endpoints, rate_limiter)
 
         if _control["signal"] == "stop":
             raise _ScanStopped()
@@ -1133,7 +1169,7 @@ async def _run_pipeline(config: dict):
         # ── Phase 4: AI Analysis ──
         ai_data = None
         if enable_ai:
-            ai_data = await _phase_ai(crawled_urls, inject_findings, ai_model)
+            ai_data = await _phase_ai(crawled_urls, ai_model)
 
             if _control["signal"] == "stop":
                 raise _ScanStopped()
